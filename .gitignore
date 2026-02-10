@@ -1,0 +1,21 @@
+# VS Code
+.vscode/
+*.code-workspace
+
+# ------------------------
+# macOS
+# ------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# ------------------------
+# General
+# ------------------------
+*.swp
+*.swo
+*.bak
+*.backup
+*.tmp
+*.log
