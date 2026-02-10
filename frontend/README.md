@@ -1,18 +1,30 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-## Getting Started
 
-First, run the development server:
-
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```bash install nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+nvm --version
 ```
+```bash install node.js LTS with nvm
+nvm install --lts
+nvm use --lts
+node -v   # Node.js version, e.g., v20.x.x
+npm -v    # npm version, e.g., 10.x.x
+```
+
+
+```bash Create a React app named 'frontend'
+npx create-react-app frontend
+cd frontend
+
+# Start development server
+npm run dev
+npm run build
+npm run start
+```
+
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
