@@ -6,7 +6,7 @@ cat ~/.zprofile
 source ~/.zshrc
 pyenv install 3.12.1
 pyenv local 3.12.1
-pyenv versions. -- list all python versions
+pyenv versions. # list all python versions
 ```
 
 ```bash install poetry 
@@ -21,7 +21,7 @@ poetry env info
 ```bash install package using poety
 poetry add requests
 poetry add --group dev pytest black ruff
-poetry install -- install all pacckage in pyproject.toml
+poetry install #install all pacckage in pyproject.toml
 ```
 
 
