@@ -19,4 +19,11 @@ build/
 # Poetry virtual environment
 .venv/
 .env
-.env.*
+
+alembic/__pycache__/*
+alembic/versions/__pycache__/*
+tests/__pycache__/*
+
+.idea
+
+test.db

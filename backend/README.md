@@ -16,13 +16,18 @@ poetry config virtualenvs.in-project true
 poetry init
 poetry install --no-root
 poetry env info
+poetry run which python
 ```
 
 ```bash install package using poety
 poetry add requests
 poetry add --group dev pytest black ruff
 poetry install #install all pacckage in pyproject.toml
+poetry add pydantic-settings
 ```
 
-
-
+```bash initialize alembic
+poetry run alembic init alembic
+poetry run alembic revision --autogenerate -m "create initial tables"
+alembic upgrade head
+```
