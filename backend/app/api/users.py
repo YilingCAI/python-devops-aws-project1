@@ -1,4 +1,3 @@
-from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -6,16 +5,7 @@ from app.db.session import get_db
 from app.models.models import User
 from app.core.security import hash_password, verify_password
 from app.schemas.user import UserBase, UserCreate, UserLogin, UserResponse
-from app.core.security import get_current_user
-from app.core.config import settings
-from jose import jwt
-
-
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=settings.JWT_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+from app.core.security import get_current_user, create_access_token
 
 
 router = APIRouter(
