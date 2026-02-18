@@ -1,0 +1,79 @@
+name: "Terraform Apply"
+description: "Apply Terraform changes to infrastructure"
+
+inputs:
+  working-directory:
+    description: "Terraform working directory"
+    required: false
+    default: "./infra"
+  terraform-version:
+    description: "Terraform version"
+    required: false
+    default: "1.5.0"
+  environment:
+    description: "Environment (dev, staging, prod)"
+    required: true
+  aws-region:
+    description: "AWS region"
+    required: false
+    default: "us-east-1"
+  state-bucket:
+    description: "S3 bucket for Terraform state"
+    required: true
+  state-lock-table:
+    description: "DynamoDB table for state locking"
+    required: true
+  plan-artifact-path:
+    description: "Path to Terraform plan artifact"
+    required: true
+
+outputs:
+  apply-summary:
+    description: "Terraform apply summary"
+    value: ${{ steps.apply.outputs.summary }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+
+    - name: Terraform init
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        terraform init \
+          -backend-config="bucket=${{ inputs.state-bucket }}" \
+          -backend-config="key=${{ inputs.environment }}/terraform.tfstate" \
+          -backend-config="region=${{ inputs.aws-region }}" \
+          -backend-config="dynamodb_table=${{ inputs.state-lock-table }}" \
+          -upgrade
+
+    - name: Terraform apply
+      id: apply
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if [ -f "${{ inputs.plan-artifact-path }}" ]; then
+          terraform apply -auto-approve "${{ inputs.plan-artifact-path }}"
+        else
+          echo "Error: Plan artifact not found at ${{ inputs.plan-artifact-path }}"
+          exit 1
+        fi
+
+        echo "✓ Terraform apply completed"
+
+    - name: Export outputs
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        terraform output -json > /tmp/tf-outputs-${{ inputs.environment }}.json
+        echo "Outputs saved to: /tmp/tf-outputs-${{ inputs.environment }}.json"
+
+        {
+          echo 'summary<<EOF'
+          terraform output -json | jq -r 'to_entries | .[] | "\(.key): \(.value.value)"'
+          echo 'EOF'
+        } >> $GITHUB_OUTPUT

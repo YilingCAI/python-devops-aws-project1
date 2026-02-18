@@ -1,0 +1,57 @@
+name: "Terraform Validate"
+description: "Validate Terraform configuration"
+
+inputs:
+  working-directory:
+    description: "Terraform working directory"
+    required: false
+    default: "./infra"
+  terraform-version:
+    description: "Terraform version"
+    required: false
+    default: "1.5.0"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+
+    - name: Terraform format check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "Checking Terraform format..."
+        terraform fmt -check -recursive
+        echo "✓ Format check passed"
+
+    - name: Terraform init
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: terraform init -backend=false
+
+    - name: Terraform validate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "Validating Terraform configuration..."
+        terraform validate
+        echo "✓ Validation passed"
+
+    - name: Setup tflint
+      uses: terraform-linters/setup-tflint@v3
+
+    - name: Initialize tflint
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: tflint --init
+
+    - name: Run tflint
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "Running tflint..."
+        tflint --format compact
+        echo "✓ tflint check passed"

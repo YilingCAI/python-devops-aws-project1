@@ -1,0 +1,146 @@
+name: "ECS Deploy"
+description: "Deploy updated task definition to ECS Fargate service"
+
+inputs:
+  cluster:
+    description: "ECS cluster name"
+    required: true
+  service:
+    description: "ECS service name"
+    required: true
+  task-definition:
+    description: "Path to task definition file"
+    required: true
+  container-name:
+    description: "Container name in task definition"
+    required: true
+  image:
+    description: "Docker image to deploy"
+    required: true
+  environment-variables:
+    description: "Environment variables (JSON format)"
+    required: false
+    default: "{}"
+  wait-for-stability:
+    description: "Wait for service to stabilize"
+    required: false
+    default: "true"
+  timeout-seconds:
+    description: "Timeout for service stabilization"
+    required: false
+    default: "600"
+  enable-smoke-tests:
+    description: "Run smoke tests after deployment"
+    required: false
+    default: "true"
+
+outputs:
+  task-definition-arn:
+    description: "ARN of the new task definition"
+    value: ${{ steps.deploy.outputs.task-definition-arn }}
+  deployment-status:
+    description: "Deployment status"
+    value: ${{ steps.deploy.outputs.status }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Pre-deployment validation
+      shell: bash
+      run: |
+        echo "Validating deployment parameters..."
+        echo "  Cluster: ${{ inputs.cluster }}"
+        echo "  Service: ${{ inputs.service }}"
+        echo "  Image: ${{ inputs.image }}"
+
+        # Verify cluster exists
+        if ! aws ecs describe-clusters --clusters "${{ inputs.cluster }}" --query 'clusters[0].clusterArn' --output text | grep -q "arn:"; then
+          echo "Error: Cluster ${{ inputs.cluster }} not found"
+          exit 1
+        fi
+        echo "✓ Cluster validation passed"
+
+    - name: Update task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: ${{ inputs.task-definition }}
+        container-name: ${{ inputs.container-name }}
+        image: ${{ inputs.image }}
+
+    - name: Deploy to ECS service
+      id: deploy
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ inputs.service }}
+        cluster: ${{ inputs.cluster }}
+        wait-for-service-stability: ${{ inputs.wait-for-stability }}
+        wait-for-service-stability-timeout: ${{ inputs.timeout-seconds }}
+
+    - name: Verify deployment
+      shell: bash
+      run: |
+        echo "Verifying deployment..."
+
+        # Get service details
+        SERVICE_INFO=$(aws ecs describe-services \
+          --cluster "${{ inputs.cluster }}" \
+          --services "${{ inputs.service }}" \
+          --query 'services[0].[runningCount,desiredCount,status]' \
+          --output text)
+
+        RUNNING=$(echo $SERVICE_INFO | awk '{print $1}')
+        DESIRED=$(echo $SERVICE_INFO | awk '{print $2}')
+        STATUS=$(echo $SERVICE_INFO | awk '{print $3}')
+
+        echo "Service Status:"
+        echo "  Running: $RUNNING / Desired: $DESIRED"
+        echo "  Status: $STATUS"
+
+        if [ "$STATUS" != "ACTIVE" ]; then
+          echo "Warning: Service status is $STATUS (expected ACTIVE)"
+        fi
+
+        if [ "$RUNNING" -eq "$DESIRED" ] && [ "$STATUS" = "ACTIVE" ]; then
+          echo "✓ Deployment verified successfully"
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "⚠ Service not fully stable, continuing..."
+          echo "status=partial" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Run smoke tests
+      id: smoke-tests
+      if: inputs.enable-smoke-tests == 'true'
+      shell: bash
+      run: |
+        echo "Running smoke tests..."
+
+        # Get ALB DNS
+        ALB_DNS=$(aws elbv2 describe-load-balancers \
+          --query "LoadBalancers[?contains(LoadBalancerName, '${{ inputs.cluster }}')].DNSName" \
+          --output text | head -1)
+
+        if [ -z "$ALB_DNS" ]; then
+          echo "Warning: Could not find ALB DNS, skipping health checks"
+          exit 0
+        fi
+
+        echo "Testing: http://$ALB_DNS/api/health"
+
+        # Health check with retries
+        for i in {1..5}; do
+          if curl -sf "http://$ALB_DNS/api/health" > /dev/null 2>&1; then
+            echo "✓ Health check passed (attempt $i/5)"
+            exit 0
+          fi
+          
+          if [ $i -lt 5 ]; then
+            echo "Health check attempt $i/5 failed, retrying in 10s..."
+            sleep 10
+          fi
+        done
+
+        echo "✗ Health checks failed after 5 attempts"
+        exit 1

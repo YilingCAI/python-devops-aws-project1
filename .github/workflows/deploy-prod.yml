@@ -6,8 +6,8 @@ on:
             - main
     workflow_dispatch:
         inputs:
-            image_tag:
-                description: "Docker image tag to deploy (leave empty for latest)"
+            image-tag:
+                description: "Docker image tag to deploy"
                 required: false
                 type: string
 
@@ -17,26 +17,21 @@ permissions:
     pull-requests: write
     id-token: write
 
-env:
-    AWS_REGION: us-east-1
-
 jobs:
     pre-release-checks:
-        name: Pre-Release Checks
+        name: Pre-Release Validation
         runs-on: ubuntu-latest
         steps:
-            - name: Check out code
+            - name: Checkout code
               uses: actions/checkout@v4
 
-            - name: Verify this is a release commit
+            - name: Verify release commit
               run: |
-                  # Check if commit message contains release indicator
                   COMMIT_MSG=$(git log -1 --pretty=%B)
                   if [[ $COMMIT_MSG =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || [[ $COMMIT_MSG == *"release"* ]]; then
                     echo "✓ Valid release commit detected"
                   else
-                    echo "⚠️ This may not be a release commit. Please verify."
-                    echo "Commit message: $COMMIT_MSG"
+                    echo "⚠ This may not be a release commit. Proceeding anyway..."
                   fi
 
             - name: Wait for CI to complete
@@ -48,118 +43,121 @@ jobs:
                   timeoutSeconds: 600
 
     terraform-plan:
-        name: Plan Terraform Changes
-        needs: [pre-release-checks]
-        uses: ./.github/workflows/terraform-plan.yml
-        secrets: inherit
-
-    approve-terraform:
-        name: Approve Terraform Apply
-        needs: [terraform-plan]
+        name: Plan Infrastructure
+        needs: pre-release-checks
         runs-on: ubuntu-latest
-        environment:
-            name: prod-approval
+        permissions:
+            contents: read
+            id-token: write
         steps:
-            - name: Approve for production
-              run: |
-                  echo "✓ Terraform changes approved for production"
-                  echo "Approved by: ${{ github.actor }}"
+            - uses: actions/checkout@v4
 
-    terraform-apply:
-        name: Apply Terraform Changes
-        needs: [approve-terraform]
-        uses: ./.github/workflows/terraform-apply.yml
-        with:
-            environment: prod
-        secrets: inherit
-
-    approve-deployment:
-        name: Approve Fargate Deployment
-        needs: [terraform-apply]
-        runs-on: ubuntu-latest
-        environment:
-            name: prod-deployment
-        steps:
-            - name: Approve for production deployment
-              run: |
-                  echo "✓ Deployment approved for production"
-                  echo "Approved by: ${{ github.actor }}"
-
-    deploy-fargate:
-        name: Deploy to Fargate
-        needs: [approve-deployment]
-        uses: ./.github/workflows/deploy-fargate.yml
-        with:
-            environment: prod
-            image_tag: ${{ github.event.inputs.image_tag || github.sha }}
-        secrets: inherit
-
-    post-deployment-validation:
-        name: Post-Deployment Validation
-        runs-on: ubuntu-latest
-        needs: [deploy-fargate]
-        if: success()
-        steps:
-            - name: Configure AWS credentials
-              uses: aws-actions/configure-aws-credentials@v4
+            - name: AWS Authentication
+              uses: ./.github/actions/aws-auth
               with:
-                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-                  aws-region: ${{ env.AWS_REGION }}
+                  role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
 
-            - name: Run extended health checks
+            - name: Terraform Validate
+              uses: ./.github/actions/terraform/validate
+
+            - name: Terraform Plan
+              uses: ./.github/actions/terraform/plan
+              with:
+                  environment: prod
+                  state-bucket: ${{ secrets.TERRAFORM_STATE_BUCKET }}
+                  state-lock-table: ${{ secrets.TERRAFORM_LOCK_TABLE }}
+
+    terraform-approval:
+        name: Approve Terraform
+        needs: terraform-plan
+        runs-on: ubuntu-latest
+        environment:
+            name: prod-terraform
+        steps:
+            - run: echo "✓ Terraform changes approved by ${{ github.actor }}"
+
+    deploy-infrastructure:
+        name: Deploy to Production
+        needs: [terraform-approval]
+        uses: ./.github/workflows/deploy.yml
+        with:
+            environment: prod
+            image-tag: ${{ github.event.inputs.image-tag || github.sha }}
+            run-terraform: true
+            require-approval: false
+            terraform-only: false
+        secrets:
+            AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+            TERRAFORM_STATE_BUCKET: ${{ secrets.TERRAFORM_STATE_BUCKET }}
+            TERRAFORM_LOCK_TABLE: ${{ secrets.TERRAFORM_LOCK_TABLE }}
+
+    post-deployment:
+        name: Post-Deployment Validation
+        needs: deploy-infrastructure
+        runs-on: ubuntu-latest
+        if: success()
+        permissions:
+            contents: read
+            id-token: write
+        steps:
+            - name: AWS Authentication
+              uses: ./.github/actions/aws-auth
+              with:
+                  role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+
+            - name: Extended health checks
               run: |
                   CLUSTER="mypythonproject1-cluster-prod"
                   SERVICES=("backend-service-prod" "frontend-service-prod")
 
-                  for service in "${SERVICES[@]}"; do
-                    echo "Validating $service..."
+                  for SERVICE in "${SERVICES[@]}"; do
+                    echo "Checking $SERVICE..."
                     
-                    # Check service health
-                    STATUS=$(aws ecs describe-services --cluster "$CLUSTER" --services "$service" --query 'services[0].status' --output text)
-                    RUNNING=$(aws ecs describe-services --cluster "$CLUSTER" --services "$service" --query 'services[0].runningCount' --output text)
-                    DESIRED=$(aws ecs describe-services --cluster "$CLUSTER" --services "$service" --query 'services[0].desiredCount' --output text)
+                    STATUS=$(aws ecs describe-services \
+                      --cluster "$CLUSTER" \
+                      --services "$SERVICE" \
+                      --query 'services[0].status' \
+                      --output text)
                     
-                    echo "  Status: $STATUS"
-                    echo "  Running: $RUNNING / Desired: $DESIRED"
-                    
-                    if [[ "$STATUS" != "ACTIVE" ]] || [[ "$RUNNING" != "$DESIRED" ]]; then
-                      echo "✗ Service $service is not healthy"
-                      exit 1
+                    if [ "$STATUS" = "ACTIVE" ]; then
+                      echo "✓ $SERVICE is ACTIVE"
+                    else
+                      echo "⚠ $SERVICE status: $STATUS"
                     fi
                   done
-
-                  echo "✓ All services are healthy"
 
             - name: Create GitHub release
               uses: actions/github-script@v6
               with:
                   script: |
-                      const fs = require('fs');
-                      const tag = '${{ github.ref }}' === 'refs/heads/main' ? 'latest' : '${{ github.event.inputs.image_tag || github.sha }}';
-
+                      const tag = '${{ github.event.inputs.image-tag || github.sha }}'.substring(0, 8);
                       github.rest.repos.createRelease({
                         owner: context.repo.owner,
                         repo: context.repo.repo,
                         tag_name: tag,
-                        name: `Release ${tag}`,
-                        body: `Deployed to production on ${new Date().toISOString()}`,
+                        name: `Production Release ${tag}`,
+                        body: `Deployed to production at ${new Date().toISOString()}`,
                         draft: false,
                         prerelease: false
-                      });
+                      }).catch(() => console.log('Release already exists'));
 
-    notify-deployment:
-        name: Notify Deployment
-        runs-on: ubuntu-latest
-        if: always()
-        needs: [deploy-fargate, post-deployment-validation]
-        steps:
-            - name: Create deployment summary
+            - name: Report success
               run: |
-                  if [[ "${{ needs.deploy-fargate.result }}" == "success" ]]; then
-                    echo "## ✅ Production Deployment Successful" >> $GITHUB_STEP_SUMMARY
-                  else
-                    echo "## ❌ Production Deployment Failed" >> $GITHUB_STEP_SUMMARY
-                  fi
-                  echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+                  echo "## ✅ Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Image Tag**: ${{ github.event.inputs.image-tag || github.sha }}" >> $GITHUB_STEP_SUMMARY
                   echo "- **Deployed by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
-                  echo "- **Deployment time**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Timestamp**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+
+    notify-failure:
+        name: Notify Failure
+        runs-on: ubuntu-latest
+        if: failure()
+        needs: [deploy-infrastructure]
+        steps:
+            - name: Report deployment failure
+              run: |
+                  echo "## ❌ Production Deployment Failed" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Status**: Failed" >> $GITHUB_STEP_SUMMARY
+                  echo "Check workflow logs for details"

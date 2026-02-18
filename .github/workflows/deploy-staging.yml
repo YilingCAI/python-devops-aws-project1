@@ -5,26 +5,18 @@ on:
         branches:
             - develop
     workflow_dispatch:
-        inputs:
-            skip_terraform:
-                description: "Skip Terraform apply (deploy only)"
-                required: false
-                type: boolean
 
 permissions:
     contents: read
     deployments: write
     id-token: write
 
-env:
-    AWS_REGION: us-east-1
-
 jobs:
     validate-ci:
         name: Validate CI Pipeline
         runs-on: ubuntu-latest
         steps:
-            - name: Check out code
+            - name: Checkout code
               uses: actions/checkout@v4
 
             - name: Wait for CI to complete
@@ -35,28 +27,32 @@ jobs:
                   ref: ${{ github.ref }}
                   timeoutSeconds: 600
 
-    terraform-plan:
-        name: Plan Terraform Changes
-        needs: [validate-ci]
-        if: ${{ !github.event.inputs.skip_terraform }}
-        uses: ./.github/workflows/terraform-plan.yml
-        secrets: inherit
-
-    terraform-apply:
-        name: Apply Terraform Changes
-        needs: [terraform-plan]
-        if: ${{ !github.event.inputs.skip_terraform }}
-        uses: ./.github/workflows/terraform-apply.yml
+    deploy-infrastructure:
+        name: Deploy Infrastructure & Services
+        needs: validate-ci
+        uses: ./.github/workflows/deploy.yml
         with:
             environment: staging
-        secrets: inherit
+            image-tag: ${{ github.sha }}
+            run-terraform: true
+            require-approval: false
+            terraform-only: false
+        secrets:
+            AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+            TERRAFORM_STATE_BUCKET: ${{ secrets.TERRAFORM_STATE_BUCKET }}
+            TERRAFORM_LOCK_TABLE: ${{ secrets.TERRAFORM_LOCK_TABLE }}
 
-    deploy-fargate:
-        name: Deploy to Fargate
-        needs: [terraform-apply]
-        if: ${{ !github.event.inputs.skip_terraform || github.event_name == 'workflow_dispatch' }}
-        uses: ./.github/workflows/deploy-fargate.yml
-        with:
-            environment: staging
-            image_tag: ${{ github.sha }}
-        secrets: inherit
+    notify:
+        name: Notify Status
+        runs-on: ubuntu-latest
+        if: always()
+        needs: deploy-infrastructure
+        steps:
+            - name: Report deployment status
+              run: |
+                  if [[ "${{ needs.deploy-infrastructure.result }}" == "success" ]]; then
+                    echo "✅ Staging deployment successful"
+                  else
+                    echo "❌ Staging deployment failed"
+                    exit 1
+                  fi
