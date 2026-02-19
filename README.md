@@ -77,6 +77,30 @@ make deploy ENV=staging IMAGE_TAG=v1.0.0
 
 ### Principle: **Secrets in Code = Never**
 
+All environment configuration is centralized in `config/` folder:
+
+**Tracked in Git (✅):**
+- `config/.env.*.example` - Templates for each environment
+- `.gitignore` - Security rules
+
+**Never in Git (❌):**
+- `config/.env.dev` - Development settings
+- `config/.env.test` - Testing settings
+- `config/.env.local` - Local overrides
+- `config/.env.prod` - Production settings
+
+**For CI/CD:**
+- GitHub Secrets stored in repository settings
+- Used via `${{ secrets.SECRET_NAME }}` in workflows
+- OIDC token for AWS authentication (no hardcoded credentials)
+
+**For Runtime:**
+- AWS Secrets Manager for sensitive data
+- ECS task definitions inject secrets as environment variables
+- Application reads from environment at runtime
+
+See [docs/ENVIRONMENT_CONFIGURATION.md](docs/ENVIRONMENT_CONFIGURATION.md) for complete setup guide.
+
 **For CI/CD:**
 - GitHub Secrets stored in repository settings (AWS_ROLE_TO_ASSUME, DB passwords, etc.)
 - Used via `${{ secrets.SECRET_NAME }}` in workflows
@@ -89,22 +113,84 @@ make deploy ENV=staging IMAGE_TAG=v1.0.0
 - Terraform manages secrets creation in AWS
 
 **For Local Development:**
-- Copy `config/.env.example` to `.env.local`
-- Fill in local values (never commit `.env.local`)
-- Used by scripts via `source .env.local`
+- Copy `config/.env.dev.example` to `config/.env.dev`
+- Copy `config/.env.test.example` to `config/.env.test`
+- Optional: `config/.env.local` for local overrides
+- All .env files in `config/` are git-ignored (never committed)
 
-See [docs/SECRETS_MANAGEMENT.md](docs/SECRETS_MANAGEMENT.md) for detailed patterns.
+See [docs/SECRETS_MANAGEMENT.md](docs/SECRETS_MANAGEMENT.md) for detailed patterns and [docs/ENVIRONMENT_CONFIGURATION.md](docs/ENVIRONMENT_CONFIGURATION.md) for environment file structure.
 
 ## 🧪 Testing Strategy
 
-### Backend
-```bash
-# Unit tests
-cd backend && pytest
+### Backend Testing
 
-# With coverage
-pytest --cov=app --cov-report=html
+#### Layer-Based Test Architecture
+Tests are organized into two layers:
+- **Unit Tests** (mocked, no database): Fast validation of business logic (~5 seconds)
+- **Integration Tests** (real database, auto-rollback): End-to-end flow validation (~15-30 seconds)
+
+#### Quick Local Testing
+```bash
+# Run unit tests only (mocked, no DB access)
+make backend-test-unit
+
+# Run integration tests only (full DB operations)
+make backend-test-integration
+
+# Run all tests with coverage report
+make backend-test-coverage
+
+# Run all tests
+make backend-test
 ```
+
+#### Using Helper Scripts
+```bash
+# Run unit tests
+bash scripts/run-tests.sh unit
+
+# Run integration tests
+bash scripts/run-tests.sh integration
+
+# Run all tests (unit + integration)
+bash scripts/run-tests.sh all
+
+# Generate coverage HTML report
+bash scripts/run-tests.sh coverage
+```
+
+#### Database Setup (Local Development)
+```bash
+# Setup test database for local development
+bash scripts/setup-test-db.sh local
+
+# Or in Docker environment
+bash scripts/setup-test-db.sh docker
+```
+
+#### Coverage Reports
+```bash
+# HTML coverage report
+make backend-test-coverage
+
+# View report
+open htmlcov/index.html
+```
+
+#### Test Configuration Files
+- `.env.test`: Test environment variables (DB URL, secrets)
+- `pytest.ini`: Pytest configuration with `asyncio_mode=auto` and markers
+- `tests/validate_tests.py`: Configuration validator script
+
+#### Key Features
+- ✅ Automatic database transaction rollback between tests (no data pollution)
+- ✅ AsyncClient for testing async endpoints
+- ✅ Fixture-based dependency injection (database, HTTP client, auth)
+- ✅ Pre-created test users and JWT tokens
+- ✅ No database mocking in integration tests (real DB with rollback)
+- ✅ No router testing in unit tests (only business logic)
+
+See [Backend Testing Guide](docs/INFRASTRUCTURE_ADAPTATION_SUMMARY.md) for detailed documentation.
 
 ### Frontend
 ```bash

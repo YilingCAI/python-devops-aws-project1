@@ -1,23 +1,29 @@
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, declarative_base
 from app.core.config import settings
 
-SQLALCHEMY_DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/mydatabase'
-
+# SQLAlchemy 2.0 / "future" style engine
 engine = create_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
-    pool_pre_ping=True
+    future=True,
+    pool_pre_ping=True,
 )
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Session factory (SQLAlchemy 2.0 style)
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    expire_on_commit=False,
+    future=True,
+)
 
+# Declarative base
 Base = declarative_base()
 
-# Dependency for FastAPI
+
 def get_db():
+    """FastAPI dependency that yields a SQLAlchemy Session (2.0 style)."""
     db = SessionLocal()
     try:
         yield db

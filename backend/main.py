@@ -25,14 +25,18 @@ from app.api import users, health, game
 # ============================================================================
 # Load environment variables in order of precedence:
 # 1. System environment variables (already set)
-# 2. .env (environment-specific)
-# 3. .env.local (local overrides)
-env_files = [".env", ".env.local"]
-for env_file in env_files:
-    env_path = Path(env_file)
+# 2. config/.env.dev (development) or config/.env.test (testing)
+# 3. config/.env.local (local overrides)
+env_files = [
+    Path(__file__).parent.parent / "config" / ".env.dev",
+    Path(__file__).parent.parent / "config" / ".env.local",
+]
+for env_path in env_files:
     if env_path.exists():
         load_dotenv(env_path, override=False)
-        print(f"Loaded environment from {env_file}")
+        print(f"Loaded environment from {env_path}")
+    else:
+        print(f"⚠ {env_path} not found, skipping")
 
 # ============================================================================
 # LOGGING SETUP

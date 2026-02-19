@@ -25,6 +25,7 @@ from pydantic_settings import BaseSettings
 class Environment(str, Enum):
     """Application environment."""
     DEVELOPMENT = "development"
+    TEST = "test"
     STAGING = "staging"
     PRODUCTION = "production"
 

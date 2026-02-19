@@ -3,7 +3,7 @@ FROM python:3.12-slim as builder
 
 WORKDIR /build
 
-# Install build dependencies
+# Install minimal build dependency required for some wheels
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
@@ -15,7 +15,7 @@ COPY pyproject.toml poetry.lock ./
 RUN pip install --upgrade pip && \
     pip install poetry && \
     poetry config virtualenvs.create false && \
-    poetry install --no-dev --no-directory
+    poetry install --no-interaction --no-ansi --with dev --no-root
 
 # Production stage
 FROM python:3.12-slim

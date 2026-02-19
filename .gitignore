@@ -6,13 +6,27 @@
 
 # ============================================================================
 # ENVIRONMENT & SECRETS (CRITICAL - Never commit)
-# ============================================================================
+# ==============================================================================
+# Never commit actual .env files - they contain secrets and sensitive data
+# .example files ARE tracked (serve as templates)
+# config/ folder contains centralized environment configuration
+
+# Root level (legacy - kept for backward compatibility)
 .env
 .env.local
 .env.docker
 .env.staging
 .env.prod
 .env.*.local
+
+# config/ folder - centralized environment configuration
+# NOTE: .env.*.example files ARE tracked (they are templates)
+config/.env
+config/.env.*
+!config/.env.*.example
+!config/.env.*.md
+
+# Environment files at any level
 *.pem
 *.key
 *.cert

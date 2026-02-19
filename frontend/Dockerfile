@@ -10,6 +10,7 @@ COPY angular.json ./
 COPY postcss.config.mjs ./
 
 # Install dependencies
+RUN npm install
 RUN npm ci
 
 # Copy source code
