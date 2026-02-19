@@ -7,6 +7,8 @@ on:
         branches: ["main", "develop", "staging"]
         types: [opened, synchronize, reopened]
 
+    workflow_dispatch:
+
 permissions:
     contents: read
     security-events: write
