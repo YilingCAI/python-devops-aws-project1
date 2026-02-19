@@ -139,8 +139,8 @@ resource "aws_lb" "main" {
     prefix  = "alb-logs"
   }
 
-  enable_deletion_protection = true
-  enable_http2               = true
+  enable_deletion_protection       = true
+  enable_http2                     = true
   enable_cross_zone_load_balancing = true
 
   tags = {
@@ -156,7 +156,7 @@ resource "aws_lb_target_group" "app" {
   vpc_id               = var.vpc_id
   target_type          = "ip"
   deregistration_delay = 30
-  
+
   stickiness {
     type            = "lb_cookie"
     cookie_duration = 86400

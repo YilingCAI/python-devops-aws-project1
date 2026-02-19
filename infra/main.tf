@@ -80,7 +80,7 @@ resource "aws_secretsmanager_secret" "jwt_secret" {
 
 # Enable automatic rotation for JWT secret
 resource "aws_secretsmanager_secret_rotation" "jwt_secret" {
-  secret_id           = aws_secretsmanager_secret.jwt_secret.id
+  secret_id = aws_secretsmanager_secret.jwt_secret.id
   rotation_rules {
     automatically_after_days = 30
   }

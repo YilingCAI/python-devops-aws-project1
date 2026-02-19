@@ -28,7 +28,7 @@ resource "aws_secretsmanager_secret" "db_password" {
 
 # Enable automatic rotation for DB password (CKV2_AWS_57)
 resource "aws_secretsmanager_secret_rotation" "db_password" {
-  secret_id           = aws_secretsmanager_secret.db_password.id
+  secret_id = aws_secretsmanager_secret.db_password.id
   rotation_rules {
     automatically_after_days = 30
   }
@@ -71,20 +71,20 @@ resource "aws_db_instance" "main" {
   vpc_security_group_ids = [var.rds_security_group_id]
 
   # Security
-  skip_final_snapshot       = false
-  final_snapshot_identifier = "${var.project_name}-db-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
-  copy_tags_to_snapshot     = true
-  publicly_accessible       = false
-  storage_encrypted         = true
-  kms_key_id                = aws_kms_key.rds.arn
+  skip_final_snapshot                 = false
+  final_snapshot_identifier           = "${var.project_name}-db-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+  copy_tags_to_snapshot               = true
+  publicly_accessible                 = false
+  storage_encrypted                   = true
+  kms_key_id                          = aws_kms_key.rds.arn
   iam_database_authentication_enabled = true
-  deletion_protection       = true
+  deletion_protection                 = true
 
   # Backups
-  backup_retention_period = var.backup_retention_days
-  backup_window           = "03:00-04:00"
-  maintenance_window      = "mon:04:00-mon:05:00"
-  multi_az                = var.multi_az
+  backup_retention_period    = var.backup_retention_days
+  backup_window              = "03:00-04:00"
+  maintenance_window         = "mon:04:00-mon:05:00"
+  multi_az                   = var.multi_az
   auto_minor_version_upgrade = true
 
   # Monitoring
