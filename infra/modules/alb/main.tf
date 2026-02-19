@@ -15,6 +15,26 @@ resource "aws_s3_bucket" "alb_logs" {
   }
 }
 
+# Enable versioning for compliance (CKV_AWS_21)
+resource "aws_s3_bucket_versioning" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# Enable server-side encryption (CKV_AWS_27)
+resource "aws_s3_bucket_server_side_encryption_configuration" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
 # Block public access
 resource "aws_s3_bucket_public_access_block" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
@@ -25,13 +45,25 @@ resource "aws_s3_bucket_public_access_block" "alb_logs" {
   restrict_public_buckets = true
 }
 
-# Bucket policy for ALB to write logs
+# Bucket policy for ALB to write logs with encryption enforcement
 resource "aws_s3_bucket_policy" "alb_logs" {
   bucket = aws_s3_bucket.alb_logs.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      {
+        Sid       = "DenyUnencryptedObjectUploads"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.alb_logs.arn}/*"
+        Condition = {
+          StringNotEquals = {
+            "s3:x-amz-server-side-encryption" = "AES256"
+          }
+        }
+      },
       {
         Effect = "Allow"
         Principal = {
@@ -42,6 +74,8 @@ resource "aws_s3_bucket_policy" "alb_logs" {
       }
     ]
   })
+
+  depends_on = [aws_s3_bucket_public_access_block.alb_logs]
 }
 
 # Get AWS ELB service account
@@ -58,9 +92,10 @@ resource "aws_lb" "main" {
   access_logs {
     bucket  = aws_s3_bucket.alb_logs.id
     enabled = true
+    prefix  = "alb-logs"
   }
 
-  enable_deletion_protection = false
+  enable_deletion_protection = true
 
   tags = {
     Name = "${var.project_name}-alb"
