@@ -71,9 +71,18 @@ module "alb" {
 resource "aws_secretsmanager_secret" "jwt_secret" {
   name_prefix             = "${var.project_name}-jwt-secret-"
   recovery_window_in_days = 7
+  kms_key_id              = aws_kms_key.secrets.id
 
   tags = {
     Name = "${var.project_name}-jwt-secret"
+  }
+}
+
+# Enable automatic rotation for JWT secret
+resource "aws_secretsmanager_secret_rotation" "jwt_secret" {
+  secret_id           = aws_secretsmanager_secret.jwt_secret.id
+  rotation_rules {
+    automatically_after_days = 30
   }
 }
 

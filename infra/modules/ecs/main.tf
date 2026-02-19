@@ -6,10 +6,22 @@
  * - IAM roles with least privilege
  */
 
-# CloudWatch Log Group for ECS
+# KMS Key for ECS CloudWatch Logs
+resource "aws_kms_key" "ecs_logs" {
+  description             = "KMS key for ECS CloudWatch Logs"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+
+  tags = {
+    Name = "${var.project_name}-ecs-logs-key"
+  }
+}
+
+# CloudWatch Log Group for ECS with KMS encryption and 1-year retention (CKV_AWS_158, CKV_AWS_338)
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/${var.project_name}"
-  retention_in_days = var.log_retention_days
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.ecs_logs.arn
 
   tags = {
     Name = "${var.project_name}-ecs-logs"
