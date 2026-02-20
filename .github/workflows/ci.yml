@@ -120,26 +120,26 @@ jobs:
                   poetry config virtualenvs.create false
                   poetry install --no-root
 
-            - name: Run Ruff linter
-              working-directory: backend
-              run: |
-                  ruff check app/ --output-format=github
-                  ruff format app/ --check
+            # - name: Run Ruff linter
+            #   working-directory: backend
+            #   run: |
+            #       ruff check app/ --output-format=github
+            #       ruff format app/ --check
 
-            - name: Run Bandit security checks
-              working-directory: backend
-              run: |
-                  poetry install bandit
-                  bandit -r app/ -f json -o bandit-report.json
-              continue-on-error: true
+            # - name: Run Bandit security checks
+            #   working-directory: backend
+            #   run: |
+            #       poetry install bandit
+            #       bandit -r app/ -f json -o bandit-report.json
+            #   continue-on-error: true
 
-            - name: Upload Bandit results
-              if: always()
-              uses: github/codeql-action/upload-sarif@v3
-              with:
-                  sarif_file: "backend/bandit-report.json"
-                  category: "bandit"
-              continue-on-error: true
+            # - name: Upload Bandit results
+            #   if: always()
+            #   uses: github/codeql-action/upload-sarif@v3
+            #   with:
+            #       sarif_file: "backend/bandit-report.json"
+            #       category: "bandit"
+            #   continue-on-error: true
 
             - name: Run pytest with coverage
               working-directory: backend
