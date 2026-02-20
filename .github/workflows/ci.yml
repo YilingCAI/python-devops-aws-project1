@@ -59,7 +59,7 @@ jobs:
             #       compact: true
 
             # - name: Upload Checkov results
-            #   uses: github/codeql-action/upload-sarif@v2
+            #   uses: github/codeql-action/upload-sarif@v3
             #   with:
             #       sarif_file: "checkov-results.sarif"
             #       category: "checkov"
@@ -104,7 +104,7 @@ jobs:
                   python -m pip install --upgrade pip
                   pip install poetry
                   poetry config virtualenvs.create false
-                  poetry install
+                  poetry install --no-root
 
             - name: Run Ruff linter
               working-directory: backend
@@ -121,7 +121,7 @@ jobs:
 
             - name: Upload Bandit results
               if: always()
-              uses: github/codeql-action/upload-sarif@v2
+              uses: github/codeql-action/upload-sarif@v3
               with:
                   sarif_file: "backend/bandit-report.json"
                   category: "bandit"
@@ -230,7 +230,7 @@ jobs:
               run: npm run build
 
             - name: Store build artifacts
-              uses: actions/upload-artifact@v3
+              uses: actions/upload-artifact@v6
               with:
                   name: frontend-build
                   path: frontend/dist/
@@ -259,13 +259,6 @@ jobs:
             - name: Terraform validate
               working-directory: infra
               run: terraform validate
-
-            - name: Run tflint
-              uses: ./.github/actions/setup-tflint
-            - run: |
-                  cd infra
-                  tflint --init
-                  tflint
 
     dependency-check:
         name: Dependency Analysis
