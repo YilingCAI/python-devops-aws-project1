@@ -93,10 +93,26 @@ jobs:
             - uses: actions/checkout@v4
 
             - name: Setup Python
-              uses: actions/setup-python@v4
+              uses: actions/setup-python@v6
               with:
                   python-version: "3.12"
-                  cache: "pip"
+                  cache: "poetry"
+                  cache-dependency-path: backend/poetry.lock
+
+            - name: Generate Poetry cache key
+              id: poetry-cache
+              run: |
+                  echo "cache-key=poetry-${{ hashFiles('backend/poetry.lock') }}" >> $GITHUB_OUTPUT
+
+            - name: Cache Poetry dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cache/pypoetry
+                      ~/.virtualenvs
+                  key: ${{ steps.poetry-cache.outputs.cache-key }}
+                  restore-keys: |
+                      poetry-
 
             - name: Install dependencies
               working-directory: backend
@@ -193,6 +209,19 @@ jobs:
         steps:
             - uses: actions/checkout@v4
 
+            - name: Generate NPM cache key
+              id: npm-cache
+              run: |
+                  echo "cache-key=npm-${{ hashFiles('frontend/package-lock.json') }}" >> $GITHUB_OUTPUT
+
+            - name: Cache NPM dependencies
+              uses: actions/cache@v4
+              with:
+                  path: ~/.npm
+                  key: ${{ steps.npm-cache.outputs.cache-key }}
+                  restore-keys: |
+                      npm-
+                
             - name: Setup Node.js
               uses: actions/setup-node@v4
               with:
@@ -242,6 +271,19 @@ jobs:
         needs: security-scan
         steps:
             - uses: actions/checkout@v4
+
+            - name: Generate Terraform cache key
+              id: tf-cache
+              run: |
+                  echo "cache-key=terraform-${{ hashFiles('infra/**/*.tf', 'infra/.terraform.lock.hcl') }}" >> $GITHUB_OUTPUT
+
+            - name: Cache Terraform
+              uses: actions/cache@v4
+              with:
+                  path: infra/.terraform
+                  key: ${{ steps.tf-cache.outputs.cache-key }}
+                  restore-keys: |
+                      terraform-
 
             - name: Setup Terraform
               uses: hashicorp/setup-terraform@v2
@@ -309,6 +351,7 @@ jobs:
                   push: true
                   scan: true
                   cache: true
+                  cache-key-files: backend/poetry.lock
 
             - name: Comment PR with image info
               if: github.event_name == 'pull_request'
@@ -349,6 +392,7 @@ jobs:
                   push: true
                   scan: true
                   cache: true
+                  cache-key-files: frontend/package-lock.json
 
             - name: Comment PR with image info
               if: github.event_name == 'pull_request'

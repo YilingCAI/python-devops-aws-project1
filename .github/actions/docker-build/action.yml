@@ -33,6 +33,10 @@ inputs:
     description: "Use GitHub Actions cache"
     required: false
     default: "true"
+  cache-key-files:
+    description: "Glob pattern for files to include in cache key (e.g., poetry.lock, package-lock.json, *.tf)"
+    required: false
+    default: ""
 
 outputs:
   image-uri:
@@ -58,6 +62,17 @@ runs:
         username: ${{ inputs.registry-username }}
         password: ${{ inputs.registry-password }}
 
+    - name: Generate dynamic cache key
+      id: cache-key
+      shell: bash
+      run: |
+        if [[ -n "${{ inputs.cache-key-files }}" ]]; then
+          CACHE_KEY="docker-${{ inputs.image-name }}-${{ hashFiles(inputs.cache-key-files) }}"
+        else
+          CACHE_KEY="docker-${{ inputs.image-name }}-${{ github.sha }}"
+        fi
+        echo "key=${CACHE_KEY}" >> $GITHUB_OUTPUT
+
     - name: Extract metadata
       id: meta
       uses: docker/metadata-action@v4
@@ -79,7 +94,7 @@ runs:
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: ${{ inputs.cache == 'true' && 'type=gha' || '' }}
-        cache-to: ${{ inputs.cache == 'true' && 'type=gha,mode=max' || '' }}
+        cache-to: ${{ inputs.cache == 'true' && format('type=gha,mode=max,key={0}', steps.cache-key.outputs.key) || '' }}
         build-args: |
           BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           VCS_REF=${{ github.sha }}

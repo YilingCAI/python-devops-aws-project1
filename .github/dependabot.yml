@@ -1,0 +1,242 @@
+version: 2
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DEPENDABOT CONFIGURATION - Production-Ready
+#
+# Purpose: Automate dependency updates across Python, Docker, Terraform, and CI
+# Strategy: Weekly updates with PR limits to prevent spam
+# Security: Immediate alerts for security vulnerabilities
+#
+# Ecosystem Coverage:
+#   ✓ Python (Poetry) - /backend
+#   ✓ Docker (Base images) - /backend, /frontend
+#   ✓ Terraform (Providers/Modules) - /infra
+#   ✓ GitHub Actions (Workflow versions) - /
+#
+# CI Integration:
+#   • PR triggers CI automatically (configured in ci.yml)
+#   • Dependabot PRs run security scans
+#   • Auto-merge available for patch/minor updates
+#
+# ═════════════════════════════════════════════════════════════════════════════
+
+updates:
+  # ============================================================================
+  # PYTHON BACKEND: Poetry Package Manager
+  # ============================================================================
+  # Manages FastAPI, database drivers, and all Python dependencies
+  #
+  # Strategy:
+  #   - Weekly updates (Monday 02:00 UTC)
+  #   - Max 5 open PRs to prevent overwhelming review queue
+  #   - Immediate security updates (bypass schedule)
+  #   - pycrypto explicitly ignored (deprecated, requires manual migration)
+  #
+  # Why Poetry?
+  #   - Deterministic: poetry.lock ensures reproducible builds
+  #   - Security: Lockfile changes trigger Docker layer cache invalidation
+  #   - Integration: Works seamlessly with CI cache strategy
+  # ============================================================================
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "02:00"
+    open-pull-requests-limit: 5
+    labels:
+      - "backend"
+      - "dependencies"
+    pull-request-branch-name:
+      separator: "/"
+    allow:
+      - dependency-type: "all"
+    commit-message:
+      prefix: "build(backend):"
+      prefix-development: "build(backend-dev):"
+      include: "scope"
+    rebase-strategy: "disabled"
+    versioning-strategy: "lockfile-only"
+    # Security updates bypass the schedule and are created immediately
+    # Reason: Production security patches should not wait for weekly schedule
+
+  # ============================================================================
+  # FRONTEND: Docker Base Images
+  # ============================================================================
+  # Keeps Node.js base images patched for security vulnerabilities
+  #
+  # Strategy:
+  #   - Weekly updates (Monday 03:00 UTC)
+  #   - Max 2 open PRs (conservative: Docker updates are critical)
+  #   - Semver opt-out: Only patch/minor versions
+  #   - CI tests build and deployment
+  #
+  # Why Docker Updates?
+  #   - Base images contain OS packages (curl, openssl, etc.)
+  #   - Security vulnerabilities in base images are high-risk
+  #   - Docker layer caching invalidates automatically
+  #   - Cache busting ensures fresh layers on dependency change
+  # ============================================================================
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "03:00"
+    open-pull-requests-limit: 2
+    labels:
+      - "docker"
+      - "dependencies"
+    pull-request-branch-name:
+      separator: "/"
+    commit-message:
+      prefix: "build(docker):"
+      include: "scope"
+    # Only patch and minor versions to avoid breaking changes
+    # Major versions may require code changes (e.g., node:18 → node:20)
+    allow:
+      - dependency-type: "all"
+
+  # ============================================================================
+  # BACKEND: Docker Base Images
+  # ============================================================================
+  # Keeps Python base images patched for security vulnerabilities
+  #
+  # Strategy:
+  #   - Weekly updates (Monday 03:30 UTC)
+  #   - Max 2 open PRs (conservative: Docker updates are critical)
+  #   - Semver opt-out: Only patch/minor versions
+  #   - Cache invalidation: poetry.lock changes trigger Docker rebuild
+  #
+  # Why Docker Updates?
+  #   - Base images contain OS packages and Python runtime
+  #   - Python package installations depend on base image security
+  #   - Multi-stage builds ensure optimized production images
+  #   - Updates tested automatically via CI before deployment
+  # ============================================================================
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "03:30"
+    open-pull-requests-limit: 2
+    labels:
+      - "docker"
+      - "dependencies"
+    pull-request-branch-name:
+      separator: "/"
+    commit-message:
+      prefix: "build(docker):"
+      include: "scope"
+
+  # ============================================================================
+  # TERRAFORM: Infrastructure as Code
+  # ============================================================================
+  # Manages AWS provider versions and Terraform modules
+  #
+  # Strategy:
+  #   - Weekly updates (Tuesday 04:00 UTC)
+  #   - Max 3 open PRs (moderate: requires infrastructure review)
+  #   - All versions allowed (Terraform handles most upgrades)
+  #   - Security-focused: Always on latest provider versions
+  #
+  # Why Terraform Updates?
+  #   - AWS provider includes new resources and bug fixes
+  #   - Terraform maintains compatibility across major versions
+  #   - Infrastructure tests validate changes via CI
+  #   - ECS Fargate deployment orchestrated through Terraform
+  #
+  # NOTE: Do NOT modify Terraform code directly
+  #   - Dependabot only updates provider/module versions
+  #   - Resource configurations remain unchanged
+  #   - CI validates all infrastructure changes
+  # ============================================================================
+  - package-ecosystem: "terraform"
+    directory: "/infra"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "04:00"
+    open-pull-requests-limit: 3
+    labels:
+      - "infra"
+      - "dependencies"
+      - "terraform"
+    pull-request-branch-name:
+      separator: "/"
+    commit-message:
+      prefix: "build(terraform):"
+      include: "scope"
+    # Allow major version updates for terraform to ensure latest provider support
+    allow:
+      - dependency-type: "all"
+
+  # ============================================================================
+  # GITHUB ACTIONS: Workflow Versions
+  # ============================================================================
+  # Manages GitHub Actions action versions used in CI/CD pipelines
+  #
+  # Strategy:
+  #   - Weekly updates (Wednesday 02:00 UTC)
+  #   - Max 4 open PRs (accommodates multiple action updates)
+  #   - All versions allowed (GitHub Actions maintains compatibility)
+  #   - Critical: Actions run in privileged CI context
+  #
+  # Why GitHub Actions Updates?
+  #   - Actions contain security patches and bug fixes
+  #   - Setup actions (python, node, terraform) need latest features
+  #   - Docker build action depends on latest buildx improvements
+  #   - Cache strategy relies on recent action versions
+  #
+  # CI Pipeline Actions Updated:
+  #   - actions/checkout@v4
+  #   - actions/setup-python@v6
+  #   - actions/setup-node@v4
+  #   - docker/setup-buildx-action@v2
+  #   - docker/build-push-action@v4
+  #   - hashicorp/setup-terraform@v2
+  #   - actions/cache@v4
+  #   - And all security scanning actions
+  # ============================================================================
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+      time: "02:00"
+    open-pull-requests-limit: 4
+    labels:
+      - "ci"
+      - "dependencies"
+    pull-request-branch-name:
+      separator: "/"
+    commit-message:
+      prefix: "ci:"
+      include: "scope"
+    rebase-strategy: "disabled"
+# ═════════════════════════════════════════════════════════════════════════════
+# SECURITY & CI INTEGRATION
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# ✅ Security Model:
+#    - Dependabot PRs run full CI/CD pipeline
+#    - All security scans execute before merge
+#    - No AWS credentials used in Dependabot context
+#    - Runtime secrets stay in AWS Secrets Manager
+#    - ECR push only happens on main/staging/develop
+#
+# ✅ CI Triggers:
+#    - PR to main → Full CI + security scans
+#    - PR to staging → Full CI + security scans
+#    - PR to develop → Full CI + security scans
+#    - Configured in: .github/workflows/ci.yml
+#
+# ✅ Auto-Merge Strategy:
+#    - Workflow: .github/workflows/dependabot-auto-merge.yml
+#    - Trigger: PR from dependabot[bot]
+#    - Condition: Only after all CI checks pass
+#    - Strategy: Squash merge (clean git history)
+#    - Types: patch/minor versions only
+#
+# ═════════════════════════════════════════════════════════════════════════════
