@@ -44,6 +44,8 @@ resource "aws_secretsmanager_secret_version" "db_password" {
     port     = aws_db_instance.main.port
     dbname   = var.db_name
   })
+  # Ensure the secret value update happens after the RDS instance is created
+  depends_on = [aws_db_instance.main]
 }
 
 # DB Subnet Group
@@ -102,7 +104,6 @@ resource "aws_db_instance" "main" {
   }
 
   depends_on = [
-    aws_secretsmanager_secret_version.db_password,
   ]
 }
 
