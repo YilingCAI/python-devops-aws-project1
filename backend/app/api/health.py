@@ -20,8 +20,7 @@ def liveness():
     Returns basic status and uptime.
     """
     return HealthResponse(
-        status="healthy",
-        details={"uptime_seconds": int(time.time() - START_TIME)}
+        status="healthy", details={"uptime_seconds": int(time.time() - START_TIME)}
     )
 
 
@@ -36,15 +35,9 @@ def readiness(db: Session = Depends(get_db)):
     """
     try:
         db.execute(text("SELECT 1"))
-        return HealthResponse(
-            status="healthy",
-            details={"database": "connected"}
-        )
+        return HealthResponse(status="healthy", details={"database": "connected"})
     except Exception:
-        return HealthResponse(
-            status="unhealthy",
-            details={"database": "not reachable"}
-        )
+        return HealthResponse(status="unhealthy", details={"database": "not reachable"})
 
 
 # -------------------------
@@ -68,6 +61,6 @@ def health(db: Session = Depends(get_db)):
         status=overall_status,
         details={
             "database": db_status,
-            "uptime_seconds": int(time.time() - START_TIME)
-        }
+            "uptime_seconds": int(time.time() - START_TIME),
+        },
     )

@@ -4,34 +4,30 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.models import User
 from app.core.security import hash_password, verify_password
-from app.schemas.user import UserBase, UserCreate, UserLogin, UserResponse
+from app.schemas.user import UserCreate, UserResponse
 from app.core.security import get_current_user, create_access_token
 
+router = APIRouter(prefix="/users", tags=["Users"])
 
-router = APIRouter(
-    prefix="/users",
-    tags=["Users"]
-)
 
 # -----------------------
 # Register User
 # -----------------------
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED
+)
 def register(user: UserCreate, db: Session = Depends(get_db)):
 
     # Check if username already exists
     existing_user = db.query(User).filter(User.username == user.username).first()
     if existing_user:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already exists"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists"
         )
 
     # Create user
     new_user = User(
-        username=user.username,
-        password=hash_password(user.password),
-        wins=0
+        username=user.username, password=hash_password(user.password), wins=0
     )
 
     db.add(new_user)
@@ -46,15 +42,13 @@ def read_my_profile(current_user: User = Depends(get_current_user)):
     return {
         "id": current_user.id,
         "username": current_user.username,
-        "wins": current_user.wins
+        "wins": current_user.wins,
     }
-
 
 
 @router.post("/login", response_model=dict, status_code=status.HTTP_200_OK)
 def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db)
+    form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
 ):
     """
     OAuth2 password login (Swagger compatible)
@@ -66,7 +60,7 @@ def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
-            headers={"WWW-Authenticate": "Bearer"}
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     access_token = create_access_token({"sub": str(db_user.id)})

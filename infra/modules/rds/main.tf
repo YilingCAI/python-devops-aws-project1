@@ -5,6 +5,9 @@
  * - Automated backups and encryption
  */
 
+# Data source for current AWS account ID
+data "aws_caller_identity" "current" {}
+
 # Generate random password
 resource "random_password" "db_password" {
   length           = 32
@@ -12,13 +15,22 @@ resource "random_password" "db_password" {
   override_special = "!#$%&*()-_=+[]{}<>:?"
 }
 
-# Store password in Secrets Manager
+# Store password in Secrets Manager with KMS encryption (CKV_AWS_149)
 resource "aws_secretsmanager_secret" "db_password" {
   name_prefix             = "${var.project_name}-db-password-"
   recovery_window_in_days = 7
+  kms_key_id              = aws_kms_key.rds.id
 
   tags = {
     Name = "${var.project_name}-db-password"
+  }
+}
+
+# Enable automatic rotation for DB password (CKV2_AWS_57)
+resource "aws_secretsmanager_secret_rotation" "db_password" {
+  secret_id = aws_secretsmanager_secret.db_password.id
+  rotation_rules {
+    automatically_after_days = 30
   }
 }
 
@@ -32,6 +44,8 @@ resource "aws_secretsmanager_secret_version" "db_password" {
     port     = aws_db_instance.main.port
     dbname   = var.db_name
   })
+  # Ensure the secret value update happens after the RDS instance is created
+  depends_on = [aws_db_instance.main]
 }
 
 # DB Subnet Group
@@ -59,25 +73,30 @@ resource "aws_db_instance" "main" {
   vpc_security_group_ids = [var.rds_security_group_id]
 
   # Security
-  skip_final_snapshot       = false
-  final_snapshot_identifier = "${var.project_name}-db-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
-  publicly_accessible       = false
-  storage_encrypted         = true
-  kms_key_id                = aws_kms_key.rds.arn
+  skip_final_snapshot                 = false
+  final_snapshot_identifier           = "${var.project_name}-db-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}"
+  copy_tags_to_snapshot               = true
+  publicly_accessible                 = false
+  storage_encrypted                   = true
+  kms_key_id                          = aws_kms_key.rds.arn
+  iam_database_authentication_enabled = true
+  deletion_protection                 = true
 
   # Backups
-  backup_retention_period = var.backup_retention_days
-  backup_window           = "03:00-04:00"
-  maintenance_window      = "mon:04:00-mon:05:00"
-  multi_az                = var.multi_az
+  backup_retention_period    = var.backup_retention_days
+  backup_window              = "03:00-04:00"
+  maintenance_window         = "mon:04:00-mon:05:00"
+  multi_az                   = var.multi_az
+  auto_minor_version_upgrade = true
 
   # Monitoring
   enabled_cloudwatch_logs_exports = ["postgresql"]
   monitoring_interval             = 60
   monitoring_role_arn             = aws_iam_role.rds_monitoring.arn
 
-  # Performance
+  # Performance Insights with KMS encryption (CKV_AWS_354)
   performance_insights_enabled          = true
+  performance_insights_kms_key_id       = aws_kms_key.rds.arn
   performance_insights_retention_period = 7
 
   tags = {
@@ -85,7 +104,6 @@ resource "aws_db_instance" "main" {
   }
 
   depends_on = [
-    aws_secretsmanager_secret_version.db_password,
   ]
 }
 
@@ -98,6 +116,39 @@ resource "aws_kms_key" "rds" {
   tags = {
     Name = "${var.project_name}-rds-key"
   }
+}
+
+# KMS Key Policy for RDS (CKV2_AWS_64)
+resource "aws_kms_key_policy" "rds" {
+  key_id = aws_kms_key.rds.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow RDS to use the key"
+        Effect = "Allow"
+        Principal = {
+          Service = "rds.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 resource "aws_kms_alias" "rds" {
@@ -128,10 +179,22 @@ resource "aws_iam_role_policy_attachment" "rds_monitoring" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
 }
 
-# CloudWatch Log Group for RDS
+# KMS Key for CloudWatch Logs
+resource "aws_kms_key" "cloudwatch_logs" {
+  description             = "KMS key for CloudWatch Logs"
+  deletion_window_in_days = 10
+  enable_key_rotation     = true
+
+  tags = {
+    Name = "${var.project_name}-cloudwatch-logs-key"
+  }
+}
+
+# CloudWatch Log Group for RDS with KMS encryption and 1-year retention (CKV_AWS_158, CKV_AWS_338)
 resource "aws_cloudwatch_log_group" "rds" {
   name              = "/aws/rds/${var.project_name}"
-  retention_in_days = var.log_retention_days
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.cloudwatch_logs.arn
 
   tags = {
     Name = "${var.project_name}-rds-logs"

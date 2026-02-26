@@ -10,28 +10,26 @@ COPY angular.json ./
 COPY postcss.config.mjs ./
 
 # Install dependencies
+RUN npm install
 RUN npm ci
 
 # Copy source code
 COPY src ./src
-COPY public ./public
 
 # Build the application
 RUN npm run build
 
 # Production stage
-FROM node:20-alpine
+FROM nginx:alpine
 
-WORKDIR /app
+# Copy nginx config with SPA fallback (try_files → index.html)
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Install http-server to serve the static files
-RUN npm install -g http-server
-
-# Copy built app from builder
-COPY --from=builder /app/dist/frontend ./dist
+# Copy built app from builder — Angular 19 (browser builder) outputs to dist/frontend
+COPY --from=builder /app/dist/frontend /usr/share/nginx/html
 
 # Expose port
 EXPOSE 4200
 
-# Start the application
-CMD ["http-server", "dist", "-p", "4200"]
+# Start nginx in the foreground
+CMD ["nginx", "-g", "daemon off;"]

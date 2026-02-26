@@ -1,399 +1,249 @@
-# Architecture Overview
+# Architecture
 
-Complete system design and component overview for MyPythonProject1.
+This document describes the full system architecture of MyPythonProject1 — how services are structured, how they communicate, how infrastructure is provisioned, and how code moves from a developer's machine to production.
 
-## System Architecture
+---
+
+## System Diagram
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                            GitHub Repository                          │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Code: backend/, frontend/, infra/, scripts/, docs/              │  │
-│  │ Config: config/, Makefile, .github/workflows/                   │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└────────────────────┬─────────────────────────────────────────────────────┘
-                     │
-        ┌────────────┴─────────────┐
-        │                          │
-   ┌────▼─────────┐        ┌──────▼──────┐
-   │ Developer    │        │ Branch      │
-   │ Push to      │        │ Push to     │
-   │ develop      │        │ main        │
-   └────┬─────────┘        └──────┬──────┘
-        │                         │
-        │                         └─────────────┐
-        │                                       │
-   ┌────▼─────────────────────┐         ┌──────▼──────────────┐
-   │ GitHub Actions:          │         │ GitHub Actions:    │
-   │ Staging Pipeline         │         │ Production Pipeline│
-   └────┬─────────────────────┘         └──────┬──────────────┘
-        │                                      │
-        └──────────────┬──────────────────────┘
-                       │
-        ┌──────────────▼───────────────┐
-        │  GitHub Actions Orchestration│
-        │  (deploy.yml)                │
-        ├──────────────────────────────┤
-        │ 1. Validate inputs           │
-        │ 2. Run approval gate         │
-        │ 3. Terraform plan (if needed)│
-        │ 4. Terraform apply (if ok)   │
-        │ 5. Docker build & push       │
-        │ 6. ECS deploy                │
-        └──────────────┬───────────────┘
-                       │
-        ┌──────────────▼────────────────────┐
-        │  AWS Services                     │
-        │  ┌──────────────────────────────┐ │
-        │  │ IAM & Security               │ │
-        │  │ - GitHub OIDC Provider       │ │
-        │  │ - Roles & Policies           │ │
-        │  └──────────────────────────────┘ │
-        │  ┌──────────────────────────────┐ │
-        │  │ Storage                      │ │
-        │  │ - S3: Terraform state        │ │
-        │  │ - DynamoDB: State locks      │ │
-        │  │ - ECR: Docker images         │ │
-        │  │ - Secrets Manager: App creds │ │
-        │  └──────────────────────────────┘ │
-        │  ┌──────────────────────────────┐ │
-        │  │ Networking                   │ │
-        │  │ - VPC: Private/Public subnets│ │
-        │  │ - Security Groups: Firewalls │ │
-        │  │ - NAT Gateway: Egress        │ │
-        │  │ - ALB: Load balancer         │ │
-        │  └──────────────────────────────┘ │
-        │  ┌──────────────────────────────┐ │
-        │  │ Compute                      │ │
-        │  │ - ECS Cluster                │ │
-        │  │ - Fargate Tasks (Backend)    │ │
-        │  │ - Fargate Tasks (Frontend)   │ │
-        │  │ - Auto Scaling Group         │ │
-        │  └──────────────────────────────┘ │
-        │  ┌──────────────────────────────┐ │
-        │  │ Database                     │ │
-        │  │ - RDS PostgreSQL             │ │
-        │  │ - Multi-AZ (prod)            │ │
-        │  │ - Automated backups          │ │
-        │  │ - Read replicas (optional)   │ │
-        │  └──────────────────────────────┘ │
-        │  ┌──────────────────────────────┐ │
-        │  │ Monitoring & Logging         │ │
-        │  │ - CloudWatch Logs (ECS)      │ │
-        │  │ - CloudWatch Metrics         │ │
-        │  │ - CloudWatch Alarms          │ │
-        │  │ - X-Ray (optional tracing)   │ │
-        │  └──────────────────────────────┘ │
-        └──────────────────────────────────┘
-                       │
-        ┌──────────────┴───────────────┐
-        │                              │
-   ┌────▼──────┐              ┌───────▼────┐
-   │  Users    │              │ Developers │
-   │  Access   │              │  Monitor   │
-   │  via      │              │  via       │
-   │  ALB/     │              │  CloudWatch│
-   │  DNS      │              │  Console   │
-   └───────────┘              └────────────┘
+Developer Workstation
+        │
+        │  git push
+        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       GitHub Repository                         │
+│                                                                 │
+│  Branches:  feature/* ──► develop ──► main ──► v* tag          │
+│                                                                 │
+│  Workflows:                                                     │
+│    ci.yml            ← runs on every PR and push to main/dev   │
+│    staging.yml       ← runs on push to develop                 │
+│    release.yml       ← runs on push to main (release) +        │
+│                         push of v* tag (production deploy)      │
+└──────────────┬──────────────────────────┬───────────────────────┘
+               │                          │
+        Staging deploy              Production deploy
+               │                          │
+               ▼                          ▼
+   ┌───────────────────┐     ┌─────────────────────────┐
+   │ GHCR Docker Image │     │   ECR Docker Image       │
+   │ tag: staging-<sha>│     │   tag: v1.3.0, latest    │
+   └────────┬──────────┘     └────────────┬─────────────┘
+            │                             │
+            ▼                             ▼
+   ┌─────────────────────────────────────────────────────┐
+   │                    AWS (us-east-1)                  │
+   │                                                     │
+   │  ┌──────────────────────────────────────────────┐   │
+   │  │               VPC  10.0.0.0/16               │   │
+   │  │                                              │   │
+   │  │  Public Subnets (2 AZs)                     │   │
+   │  │  ┌─────────────────────────────────────┐    │   │
+   │  │  │  Application Load Balancer (ALB)    │    │   │
+   │  │  │  :443 HTTPS → backend :8000         │    │   │
+   │  │  │  :80  HTTP  → 301 redirect          │    │   │
+   │  │  │  NAT Gateway (outbound egress)      │    │   │
+   │  │  └────────────────┬────────────────────┘    │   │
+   │  │                   │                         │   │
+   │  │  Private Subnets (2 AZs)                    │   │
+   │  │  ┌────────────────▼────────────────────┐    │   │
+   │  │  │  ECS Fargate Cluster                │    │   │
+   │  │  │  ┌──────────────────────────────┐   │    │   │
+   │  │  │  │ backend service              │   │    │   │
+   │  │  │  │ FastAPI + Uvicorn :8000      │   │    │   │
+   │  │  │  │ fetches secrets from SM      │   │    │   │
+   │  │  │  └──────────────────────────────┘   │    │   │
+   │  │  │  ┌──────────────────────────────┐   │    │   │
+   │  │  │  │ frontend service             │   │    │   │
+   │  │  │  │ Nginx serving Angular :80    │   │    │   │
+   │  │  │  └──────────────────────────────┘   │    │   │
+   │  │  └────────────────────────────────────┘    │   │
+   │  │                                            │   │
+   │  │  DB Subnets (isolated, no public route)    │   │
+   │  │  ┌─────────────────────────────────────┐   │   │
+   │  │  │  RDS PostgreSQL 16 (Multi-AZ prod)  │   │   │
+   │  │  │  port 5432, encrypted at rest       │   │   │
+   │  │  └─────────────────────────────────────┘   │   │
+   │  └──────────────────────────────────────────┘   │
+   │                                                 │
+   │  Supporting services (not in VPC):              │
+   │  ┌──────────────────────────────────────────┐   │
+   │  │ Secrets Manager  — DB password, JWT key  │   │
+   │  │ ECR              — production images     │   │
+   │  │ S3 + DynamoDB    — Terraform state       │   │
+   │  │ IAM OIDC         — GitHub Actions auth   │   │
+   │  │ CloudWatch Logs  — ECS task logs         │   │
+   │  └──────────────────────────────────────────┘   │
+   └─────────────────────────────────────────────────┘
 ```
 
-## Component Breakdown
+---
 
-### 1. GitHub Repository
-**Purpose**: Single source of truth for all code and infrastructure
+## Application Layers
 
-**Contains**:
-- Backend source code (FastAPI)
-- Frontend source code (Angular)
-- Infrastructure code (Terraform)
-- Deployment scripts (Bash)
-- Documentation and examples
-- GitHub Actions workflows
+### Backend (FastAPI)
 
-### 2. GitHub Actions (CI/CD)
-**Purpose**: Automated testing, building, and deployment
-
-**Workflows**:
-- `deploy.yml`: Main orchestration (called by other workflows)
-- `deploy-staging.yml`: Triggers on develop branch pushes
-- `deploy-prod.yml`: Triggers on main branch pushes (requires approval)
-
-**What Happens**:
-1. Code pushed → Workflow triggered
-2. Validation checks (inputs, environment)
-3. Optional approval gate (production only)
-4. Terraform plan → human review → apply
-5. Docker build → push to ECR
-6. ECS task definition update → deployment
-7. Health checks and monitoring
-
-### 3. AWS IAM & Security
-**Purpose**: Secure access to AWS resources
-
-**Key Resources**:
-- **GitHubActionsRole**: IAM role assumed by GitHub Actions
-- **OIDC Provider**: Trust relationship (no API keys needed)
-- **Policies**: Least-privilege access for each service
-
-**Why OIDC?**
-- No hardcoded AWS credentials
-- Credentials automatically rotated
-- Audit trail in CloudTrail
-- Industry standard approach
-
-### 4. AWS Storage (S3 & DynamoDB)
-**Purpose**: Store Terraform state and infrastructure locks
-
-**S3 Bucket** (`myproject-tf-state-staging`):
-- Stores Terraform state files (.tfstate)
-- Versioning enabled (recover previous states)
-- Encryption enabled (SSE-S3)
-- Private access only
-
-**DynamoDB Table** (`terraform-locks-staging`):
-- Prevents simultaneous Terraform applies
-- Avoids conflicts and corruption
-- Auto-cleanup after 5 minutes
-
-### 5. AWS ECR (Elastic Container Registry)
-**Purpose**: Store Docker images
-
-**Registries** (per environment):
-- `123456789012.dkr.ecr.us-east-1.amazonaws.com/myproject-backend:staging`
-- `123456789012.dkr.ecr.us-east-1.amazonaws.com/myproject-frontend:staging`
-
-**Image Management**:
-- Images tagged with build number or version
-- Lifecycle policies delete old images
-- Vulnerability scanning with Trivy
-
-### 6. AWS Secrets Manager
-**Purpose**: Secure secret storage
-
-**Stored Secrets**:
-- `/myproject/staging/db-password`
-- `/myproject/staging/jwt-secret`
-- `/myproject/staging/api-keys`
-
-**Access Pattern**:
-- Terraform reads secrets
-- Passes to ECS via task definition environment
-- Application reads from environment at runtime
-
-### 7. AWS VPC (Virtual Private Cloud)
-**Purpose**: Isolated network for all resources
-
-**Architecture**:
-- **VPC CIDR**: 10.0.0.0/16
-- **Public Subnets** (2 AZs):
-  - 10.0.101.0/24 (us-east-1a)
-  - 10.0.102.0/24 (us-east-1b)
-  - Contains: NAT Gateway, ALB
-- **Private Subnets** (2 AZs):
-  - 10.0.1.0/24 (us-east-1a)
-  - 10.0.2.0/24 (us-east-1b)
-  - Contains: ECS tasks, RDS database
-
-**Network Flow**:
 ```
-Internet → ALB (public) → ECS tasks (private)
-ECS tasks → NAT Gateway → Internet (for package downloads)
-ECS tasks → RDS (private, same VPC)
+app/
+├── api/          ← Route handlers (thin controllers — validate input, call service, return response)
+│   ├── health.py ← GET /health  (used by ALB health checks + smoke tests)
+│   ├── user.py   ← POST /users, GET /users/me, etc.
+│   └── game.py   ← CRUD + game logic endpoints
+├── core/
+│   ├── config.py ← pydantic-settings reads env vars, validates types at startup
+│   ├── security.py ← JWT creation/verification, password hashing (bcrypt/argon2)
+│   └── logging.py  ← JSON structured logging
+├── db/
+│   ├── session.py  ← async SQLAlchemy session factory, dependency injector
+│   └── base.py     ← declarative base, shared metadata
+├── models/         ← SQLAlchemy ORM models (database schema)
+├── schemas/        ← Pydantic models (API contract — request/response shapes)
+└── services/       ← Business logic (no HTTP, no DB calls — pure functions + repo calls)
 ```
 
-### 8. AWS ALB (Application Load Balancer)
-**Purpose**: Distribute incoming traffic
-
-**Features**:
-- Public IP for accepting traffic
-- Health checks on backend tasks
-- Path-based routing (backend/frontend)
-- SSL/TLS termination (optional)
-
-**Listeners**:
-- Port 80 (HTTP) → Port 8000 (backend)
-- Port 80 (HTTP) → Port 80 (frontend)
-
-### 9. AWS ECS (Elastic Container Service)
-**Purpose**: Run containerized applications
-
-**Cluster**: `myproject-staging`
-- **Backend Service**:
-  - Container: FastAPI app
-  - Port: 8000
-  - Desired Tasks: 2
-  - Task Size: 256 CPU, 512 memory
-- **Frontend Service**:
-  - Container: Angular app (Nginx)
-  - Port: 80
-  - Desired Tasks: 1 (can scale)
-  - Task Size: 256 CPU, 512 memory
-
-**Task Definition**:
-- Pulls image from ECR
-- Injects environment variables (from Secrets Manager)
-- Configures logging to CloudWatch
-- Sets resource limits (CPU, memory)
-
-### 10. AWS RDS (Relational Database Service)
-**Purpose**: Managed PostgreSQL database
-
-**Configuration** (staging):
-- Engine: PostgreSQL 16.1
-- Instance: db.t4g.micro
-- Storage: 20 GB (gp2)
-- Backup: 7 days
-- Multi-AZ: Disabled
-
-**Configuration** (production):
-- Engine: PostgreSQL 16.1
-- Instance: db.t4g.small or larger
-- Storage: 100+ GB (gp3)
-- Backup: 30 days
-- Multi-AZ: Enabled (high availability)
-
-**Access**:
-- Only accessible from VPC (private subnet)
-- Security group restricts to ECS tasks only
-- Encrypted at rest (KMS)
-
-### 11. AWS CloudWatch
-**Purpose**: Monitoring, logging, and alerting
-
-**Logs** (`/aws/ecs/myproject-staging`):
-- All ECS task logs centralized
-- Searchable and filterable
-- 7-14 day retention
-
-**Metrics**:
-- ECS CPU utilization
-- ECS memory utilization
-- ALB target health
-- RDS connections
-
-**Alarms** (optional):
-- Alert when CPU > 80%
-- Alert when memory > 90%
-- Alert when healthy targets = 0
-
-## Data Flow Examples
-
-### User Makes a Request
+**Request lifecycle:**
 ```
-User Browser
-    ↓ (https://myapp.example.com)
-    ↓
-ALB (public, 0.0.0.0:443)
-    ↓
-    ├→ Frontend task (Angular Nginx) :80
-    │   ↓
-    │   Serves HTML/CSS/JS
-    │   ↓
-    │   Browser makes API call (http://backend:8000/api/...)
-    │
-    └→ Backend task (FastAPI) :8000
-        ↓
-        Authentication (JWT from Secrets Manager)
-        ↓
-        RDS Database (PostgreSQL in private subnet)
-        ↓
-        Returns JSON response
+HTTP request
+  → ALB
+  → ECS Fargate container (Uvicorn ASGI)
+  → FastAPI router (api/)
+  → Pydantic schema validation
+  → Service layer (services/)
+  → SQLAlchemy session (db/session.py)
+  → PostgreSQL
+  → Pydantic response schema
+  → HTTP response
 ```
 
-### Deployment Process
+### Frontend (Angular)
+
 ```
-Developer pushes code
-    ↓
-GitHub webhook triggers workflow
-    ↓
-GitHub Actions:
-  1. Checkout code
-  2. Assume AWS role (OIDC)
-  3. Run Terraform plan (DynamoDB locks state)
-  4. Human review
-  5. Terraform apply (creates/updates AWS resources)
-  6. Build Docker images (with Trivy scanning)
-  7. Push to ECR
-  8. Update ECS task definition
-  9. Update ECS service
-  10. Wait for tasks to become healthy
-  11. Run smoke tests
-  12. Report success/failure
-    ↓
-Users see new version live
+src/app/
+├── components/        ← Feature UI (login, register, dashboard, game)
+├── services/
+│   ├── api.service.ts ← Base HTTP client with error handling
+│   ├── auth.service.ts ← Login, logout, token storage
+│   └── game.service.ts ← Game CRUD via API
+├── core/
+│   ├── auth.guard.ts        ← Redirects unauthenticated users to /login
+│   └── http.interceptor.ts  ← Attaches Bearer token to every API request
+└── types/              ← Shared TypeScript interfaces
 ```
 
-## Environment Differences
+### Database (PostgreSQL)
 
-| Component | Dev | Staging | Production |
-|-----------|-----|---------|------------|
-| ECS Instance | t4g.micro | t4g.micro | t4g.small+ |
-| Desired Tasks | 1 | 2 | 3+ |
-| Multi-AZ | No | No | Yes |
-| RDS Instance | local | db.t4g.micro | db.t4g.small+ |
-| Backup Retention | None | 7 days | 30 days |
-| State Locking | N/A | DynamoDB | DynamoDB |
-| Approval Gate | N/A | Optional | Required |
-| HTTPS | No | No | Yes |
-| Auto Scaling | No | No | Yes (1-10) |
+- Migrations managed by **Alembic** (`backend/alembic/versions/`)
+- Applied automatically on each deploy before ECS tasks start
+- In production: Multi-AZ RDS, automated daily backups, encrypted at rest with KMS
+- In staging: single-AZ RDS, daily backups, encrypted
+- In tests: ephemeral PostgreSQL Docker container, auto-rollback after each test
 
-## Security Layers
+---
 
-### Layer 1: Repository
-- Branch protection rules
-- PR approval requirements
-- Code review process
+## Infrastructure (Terraform)
 
-### Layer 2: CI/CD
-- GitHub Actions secrets (encrypted)
-- OIDC authentication (no hardcoded creds)
-- Artifact retention policies
-- Deployment approval gates
+Infrastructure is split into reusable modules:
 
-### Layer 3: AWS
-- IAM roles and policies
-- Security groups (firewalls)
-- Private subnets (not accessible from internet)
-- Encrypted state storage
-- Secrets Manager encryption
+| Module | Resources |
+|---|---|
+| `modules/network` | VPC, public/private/DB subnets, IGW, NAT Gateway, route tables, NACLs |
+| `modules/alb` | ALB, target groups, listeners (HTTP→HTTPS redirect, HTTPS forward) |
+| `modules/ecs` | ECS cluster, backend + frontend task definitions, IAM execution role |
+| `modules/rds` | RDS PostgreSQL instance, subnet group, security group, KMS key |
+| `modules/iam` | GitHub OIDC provider, CI/CD IAM roles (staging/production) |
 
-### Layer 4: Application
-- Authentication (JWT tokens)
-- HTTPS/TLS (in production)
-- Environment variable injection
-- SQL parameter escaping
+Environment-specific values live in `infra/envs/staging.tfvars` and `infra/envs/prod.tfvars`. The Terraform code itself is environment-agnostic.
 
-## Scaling Considerations
+Remote state is stored in S3 with DynamoDB locking. The backend block uses **partial configuration** so bucket/key/region are injected at `terraform init` time by CI workflows:
 
-### Vertical Scaling (same instance, more resources)
 ```bash
-# Edit infra/envs/staging.tfvars
-ecs_cpu    = "512"      # was 256
-ecs_memory = "1024"     # was 512
-
-make tf-apply ENV=staging
+terraform init \
+  -backend-config="bucket=myproject-terraform-state" \
+  -backend-config="key=staging/terraform.tfstate" \
+  -backend-config="region=us-east-1" \
+  -backend-config="dynamodb_table=terraform-locks"
 ```
 
-### Horizontal Scaling (more instances)
-```bash
-# Edit infra/envs/staging.tfvars
-ecs_desired_count = 5   # was 2
-ecs_max_capacity  = 20  # was 4
+---
 
-make tf-apply ENV=staging
+## Security Model
+
+### Secrets — Never in code
+
+| Secret type | Where stored | How accessed |
+|---|---|---|
+| DB password | AWS Secrets Manager | ECS task IAM role at container startup |
+| JWT secret | AWS Secrets Manager | ECS task IAM role at container startup |
+| CI/CD AWS credentials | GitHub OIDC (no static keys) | `aws-actions/configure-aws-credentials` |
+| Staging secrets | GitHub Environment "staging" | Workflow `${{ secrets.* }}` |
+| Production secrets | GitHub Environment "production" | Workflow `${{ secrets.* }}` with required reviewer approval |
+
+### Network — Least privilege
+
+- ECS tasks run in **private subnets** — no inbound internet access
+- Only the ALB (in public subnet) is internet-facing
+- RDS is in **DB subnets** — only the ECS security group can reach port 5432
+- All inter-service traffic is within the VPC
+- All egress from private subnets routes through the NAT Gateway
+
+### IAM — OIDC, no static keys
+
+GitHub Actions authenticates to AWS using an **OIDC identity provider** — no IAM user access keys are stored anywhere. Each environment has a dedicated IAM role with the minimum permissions required for that environment.
+
+---
+
+## CI/CD Flow — End to End
+
 ```
+Developer writes code on feature branch
+        │
+        │ git push origin feature/add-game-mode
+        ▼
+Pull Request opened → develop
+        │
+        ├─ ci.yml triggered
+        │     commitlint:       all commits follow Conventional Commits?
+        │     backend-ci:       ruff lint → unit tests → integration tests
+        │     frontend-ci:      eslint → tsc → ng build
+        │     security-scan:    trivy fs + gitguardian
+        │     dependency-audit: snyk python + node
+        │     terraform-plan:   staging + prod (read-only, comments plan on PR)
+        │     quality-gate:     aggregates all — single required status check
+        │
+        ├─ Code review + approval
+        │
+        ▼
+PR merged to develop
+        │
+        ├─ ci.yml triggered again (post-merge validation)
+        │
+        └─ staging.yml triggered
+              build:             docker build backend + frontend → GHCR
+              scan:              trivy image scan (warn only)
+              terraform-staging: terraform apply envs/staging.tfvars
+              deploy-staging:    ecs update-service --force-new-deployment
+              smoke-test:        curl $APP_URL/health → must return 200
 
-### Auto Scaling (based on metrics)
-- CloudWatch metrics trigger scaling policies
-- Min: 2, Max: 10 (example)
-- Scale out when CPU > 70%
-- Scale in when CPU < 30%
+        ▼
+When ready to release: merge develop → main
+        │
+        ├─ ci.yml triggered
+        │
+        └─ release.yml triggered (push to main)
+              autoversion:  semantic-release analyses commits
+                            → bumps version (e.g. 1.2.0 → 1.3.0)
+                            → writes CHANGELOG.md
+                            → commits + creates tag v1.3.0
+                            → creates GitHub Release
 
-## Cost Optimization
-
-1. **Use spot instances** (Fargate Spot) for non-critical workloads
-2. **Right-size instances** (monitor actual usage)
-3. **Use reserved capacity** for production baseline
-4. **Archive logs** to S3 after 90 days
-5. **Delete old ECR images** via lifecycle policies
-6. **Use Aurora** instead of RDS for higher workloads
+        ▼
+Tag v1.3.0 pushed
+        │
+        └─ release.yml triggered (push tag v*)
+              build-production:      docker build → ECR tagged v1.3.0 + latest
+              scan-production:       trivy — CRITICAL = hard block
+              terraform-production:  [manual approval required] → terraform apply prod
+              deploy-production:     ecs task definition update + deploy
+              smoke-test-production: curl $PROD_URL/health → must return 200
+```

@@ -27,3 +27,8 @@ output "log_group_name" {
   description = "CloudWatch log group name"
   value       = aws_cloudwatch_log_group.ecs.name
 }
+
+output "task_execution_role_arn" {
+  description = "ECS task execution role ARN (used for KMS key policy)"
+  value       = aws_iam_role.ecs_task_execution.arn
+}

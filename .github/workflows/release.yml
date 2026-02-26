@@ -1,0 +1,328 @@
+###############################################################################
+# CD — Release & Production Deployment
+###############################################################################
+# Two distinct flows gated by trigger type:
+#
+#  1. CI succeeds on main → workflow_run (Semantic Release)
+#     • Runs semantic-release: analyses conventional commits since last tag,
+#       bumps version, writes CHANGELOG.md, creates git tag + GitHub Release.
+#     • Does NOT deploy — the tag creation above triggers flow 2.
+#
+#  2. push tag → v*  (Production Deploy)
+#     • Builds production images tagged vX.Y.Z + latest
+#     • Trivy image scan (CRITICAL blocks deploy)
+#     • Terraform apply — production environment
+#     • ECS deploy — production environment
+#     • Smoke test
+#
+# Concurrency: production deploy is NEVER cancelled mid-flight.
+# ALL secrets are injected through the "production" GitHub Environment.
+###############################################################################
+name: CD — Release & Production
+
+on:
+    # Flow 1 (semantic-release): trigger only after CI succeeds on main.
+    # Flow 2 (production deploy): triggered by the git tag that semantic-release creates.
+    workflow_run:
+        workflows: ["CI"]
+        branches: [main]
+        types: [completed]
+    push:
+        tags:
+            - "v*"
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: "Tag to deploy (e.g. v1.2.3) — leave empty for latest"
+                required: false
+                type: string
+
+permissions:
+    contents: read
+
+# Semantic release: cancel if a newer main-push comes in
+# Production deploy: NEVER cancel in-progress (cancel-in-progress: false)
+concurrency:
+    group: ${{ startsWith(github.ref, 'refs/tags/') && 'production-deploy' || 'semantic-release' }}
+    cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+    # =========================================================================
+    # FLOW 1 — Semantic Release (push → main)
+    # =========================================================================
+    autoversion:
+        name: Semantic Release
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        # Only run when CI has passed on main (workflow_run) or on manual dispatch.
+        # Production tag-push events are handled by the build-production flow below.
+        if: >
+            github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'workflow_run' &&
+             github.event.workflow_run.conclusion == 'success')
+        permissions:
+            contents: write # push tag + CHANGELOG commit
+            issues: write # close issues referenced in commits
+            pull-requests: write # comment on PRs
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  persist-credentials: true # semantic-release needs push access
+                  # Check out the branch ref (not a detached SHA) so semantic-release
+                  # can push the CHANGELOG commit and tag back to the branch.
+                  ref: ${{ github.event.workflow_run.head_branch || 'main' }}
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: "20"
+                  cache: "npm"
+
+            - name: Install semantic-release
+              run: npm ci --ignore-scripts
+
+            - name: Run semantic-release
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: npx semantic-release
+
+    # =========================================================================
+    # FLOW 2a — Build production images  (push tag v*)
+    # =========================================================================
+    build-production:
+        name: Build & Push (${{ matrix.service }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        if: startsWith(github.ref, 'refs/tags/v')
+        environment: production
+        strategy:
+            matrix:
+                service: [backend, frontend]
+            fail-fast: true
+        permissions:
+            contents: read
+            packages: write # GHCR (interim; final push is to ECR below)
+            id-token: write # AWS OIDC
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ github.ref }}
+
+            - name: Resolve version tag
+              id: ver
+              run: |
+                  TAG="${GITHUB_REF#refs/tags/}"
+                  echo "tag=$TAG" >> $GITHUB_OUTPUT
+                  echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ secrets.AWS_REGION }}
+
+            - name: Log in to Amazon ECR
+              id: ecr-login
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - name: Set image metadata (ECR)
+              id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: ${{ steps.ecr-login.outputs.registry }}/${{ matrix.service }}
+                  tags: |
+                      type=semver,pattern={{version}}
+                      type=semver,pattern={{major}}.{{minor}}
+                      type=raw,value=latest
+                      type=sha,prefix=,format=short
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Build & push to ECR
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./${{ matrix.service }}
+                  file: ./${{ matrix.service }}/Dockerfile
+                  push: true
+                  tags: ${{ steps.meta.outputs.tags }}
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha,scope=${{ matrix.service }}-prod
+                  cache-to: type=gha,scope=${{ matrix.service }}-prod,mode=max
+                  build-args: |
+                      BUILD_ENV=production
+                      GIT_SHA=${{ steps.ver.outputs.sha_short }}
+                      VERSION=${{ steps.ver.outputs.tag }}
+
+    # =========================================================================
+    # FLOW 2b — Image security scan (CRITICAL blocks deploy)
+    # =========================================================================
+    scan-production:
+        name: Scan Production Image (${{ matrix.service }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        if: startsWith(github.ref, 'refs/tags/v')
+        needs: [build-production]
+        environment: production
+        strategy:
+            matrix:
+                service: [backend, frontend]
+            fail-fast: false
+        permissions:
+            security-events: write
+            id-token: write
+        steps:
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ secrets.AWS_REGION }}
+
+            - name: Log in to Amazon ECR
+              id: ecr-login
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - name: Trivy image scan (FAIL on CRITICAL)
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: "${{ steps.ecr-login.outputs.registry }}/${{ matrix.service }}:${{ github.ref_name }}"
+                  format: "sarif"
+                  output: "trivy-${{ matrix.service }}-prod.sarif"
+                  severity: "CRITICAL"
+                  exit-code: "1" # Hard block on CRITICAL in production
+
+            - name: Upload scan SARIF
+              if: always()
+              uses: github/codeql-action/upload-sarif@v3
+              with:
+                  sarif_file: "trivy-${{ matrix.service }}-prod.sarif"
+                  category: "trivy-${{ matrix.service }}-production"
+
+    # =========================================================================
+    # FLOW 2c — Terraform apply — production
+    # =========================================================================
+    terraform-production:
+        name: Terraform Apply (production)
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        if: startsWith(github.ref, 'refs/tags/v')
+        needs: [scan-production]
+        environment: production # Requires manual approval via GitHub Environments
+        permissions:
+            contents: read
+            id-token: write
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: ${{ github.ref }}
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ secrets.AWS_REGION }}
+
+            - uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: ${{ secrets.TF_VERSION }}
+
+            - name: Terraform init (remote state — production)
+              working-directory: infra
+              run: |
+                  terraform init \
+                    -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
+                    -backend-config="key=production/terraform.tfstate" \
+                    -backend-config="region=${{ secrets.AWS_REGION }}" \
+                    -backend-config="dynamodb_table=${{ secrets.TERRAFORM_LOCK_TABLE }}"
+
+            - name: Terraform plan (production)
+              working-directory: infra
+              env:
+                  TF_VAR_environment: production
+                  TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
+              run: |
+                  terraform plan \
+                    -var-file="envs/prod.tfvars" \
+                    -out=tfplan.prod \
+                    -no-color
+
+            - name: Terraform apply (production)
+              working-directory: infra
+              run: terraform apply -auto-approve tfplan.prod
+
+    # =========================================================================
+    # FLOW 2d — ECS rolling deploy — production
+    # =========================================================================
+    deploy-production:
+        name: Deploy to Production (${{ matrix.service }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        if: startsWith(github.ref, 'refs/tags/v')
+        needs: [terraform-production]
+        environment: production
+        strategy:
+            matrix:
+                service: [backend, frontend]
+            fail-fast: false
+        permissions:
+            id-token: write
+        steps:
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ secrets.AWS_REGION }}
+
+            - name: Log in to Amazon ECR
+              id: ecr-login
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - name: Render new task definition
+              id: render-task-def
+              uses: aws-actions/amazon-ecs-render-task-definition@v1
+              with:
+                  task-definition: ${{ secrets.ECS_TASK_DEFINITION }}
+                  container-name: ${{ matrix.service }}
+                  image: "${{ steps.ecr-login.outputs.registry }}/${{ matrix.service }}:${{ github.ref_name }}"
+
+            - name: Deploy to ECS
+              uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+              with:
+                  task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+                  service: "${{ secrets.ECS_SERVICE_PREFIX }}-${{ matrix.service }}"
+                  cluster: ${{ secrets.ECS_CLUSTER }}
+                  wait-for-service-stability: true
+
+    # =========================================================================
+    # FLOW 2e — Smoke test (production)
+    # =========================================================================
+    smoke-test-production:
+        name: Smoke Test (production)
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        if: startsWith(github.ref, 'refs/tags/v')
+        needs: [deploy-production]
+        environment: production
+        steps:
+            - name: Health check
+              run: |
+                  echo "Waiting for cold-start..."
+                  sleep 20
+                  STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                    "${{ secrets.APP_URL }}/health" --max-time 15 || echo "000")
+                  echo "Health check status: $STATUS"
+                  [[ "$STATUS" == "200" ]] || { echo "❌ Production health check failed ($STATUS)"; exit 1; }
+                  echo "✅ Production smoke test passed"
+
+            - name: Write deployment summary
+              if: always()
+              run: |
+                  {
+                    echo "## Production Deployment"
+                    echo "| Field   | Value |"
+                    echo "|---------|-------|"
+                    echo "| Version | \`${{ github.ref_name }}\` |"
+                    echo "| Commit  | \`${{ github.sha }}\` |"
+                    echo "| URL     | ${{ secrets.APP_URL }} |"
+                    echo "| Status  | ${{ job.status }} |"
+                  } >> $GITHUB_STEP_SUMMARY

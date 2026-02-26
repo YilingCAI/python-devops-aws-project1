@@ -1,15 +1,13 @@
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 import re
 
+
 # -------------------------
 # Base Schema (Shared Fields)
 # -------------------------
 class UserBase(BaseModel):
     username: str = Field(
-        ...,
-        min_length=3,
-        max_length=50,
-        description="Unique username"
+        ..., min_length=3, max_length=50, description="Unique username"
     )
 
 
@@ -44,6 +42,4 @@ class UserResponse(UserBase):
     id: int
     wins: int
 
-    model_config = ConfigDict(
-        from_attributes=True  # Required for SQLAlchemy ORM
-    )
+    model_config = ConfigDict(from_attributes=True)  # Required for SQLAlchemy ORM

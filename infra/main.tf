@@ -13,14 +13,22 @@ terraform {
     }
   }
 
-  # Uncomment for remote state
-  # backend "s3" {
-  #   bucket         = "your-terraform-state-bucket"
-  #   key            = "mypythonproject1/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   dynamodb_table = "terraform-locks"
-  #   encrypt        = true
-  # }
+  # Partial S3 backend configuration — all values injected at `terraform init` time
+  # via -backend-config flags in CI workflows (staging.yml / release.yml).
+  # This allows the same code to target staging and production state buckets
+  # without storing bucket names or keys in version control.
+  #
+  # Example init command (run in CI):
+  #   terraform init \
+  #     -backend-config="bucket=$TERRAFORM_STATE_BUCKET" \
+  #     -backend-config="key=<environment>/terraform.tfstate" \
+  #     -backend-config="region=$AWS_REGION" \
+  #     -backend-config="dynamodb_table=$TERRAFORM_LOCK_TABLE"
+  #
+  # Local development: run `terraform init -backend=false` to skip remote state.
+  backend "s3" {
+    encrypt = true
+  }
 }
 
 # Networking Module
@@ -71,9 +79,18 @@ module "alb" {
 resource "aws_secretsmanager_secret" "jwt_secret" {
   name_prefix             = "${var.project_name}-jwt-secret-"
   recovery_window_in_days = 7
+  kms_key_id              = aws_kms_key.secrets.id
 
   tags = {
     Name = "${var.project_name}-jwt-secret"
+  }
+}
+
+# Enable automatic rotation for JWT secret
+resource "aws_secretsmanager_secret_rotation" "jwt_secret" {
+  secret_id = aws_secretsmanager_secret.jwt_secret.id
+  rotation_rules {
+    automatically_after_days = 30
   }
 }
 
@@ -98,6 +115,56 @@ resource "aws_kms_key" "secrets" {
 resource "aws_kms_alias" "secrets" {
   name          = "alias/${var.project_name}-secrets"
   target_key_id = aws_kms_key.secrets.key_id
+}
+
+# KMS Key Policy for Secrets Manager encryption (CKV_AWS_33)
+resource "aws_kms_key_policy" "secrets" {
+  key_id = aws_kms_key.secrets.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "Allow Secrets Manager to use the key"
+        Effect = "Allow"
+        Principal = {
+          Service = "secretsmanager.amazonaws.com"
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "secretsmanager.${var.aws_region}.amazonaws.com"
+          }
+        }
+      },
+      {
+        Sid    = "Allow ECS Task Execution Role to decrypt secrets"
+        Effect = "Allow"
+        Principal = {
+          AWS = module.ecs.task_execution_role_arn
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
 }
 
 # ECS Module

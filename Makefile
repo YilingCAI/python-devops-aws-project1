@@ -35,10 +35,12 @@ help:
 	@echo "  $(YELLOW)make frontend$(NC)             - Run frontend only"
 	@echo ""
 	@echo "$(GREEN)🧪 TESTING & QUALITY$(NC)"
-	@echo "  $(YELLOW)make test$(NC)                 - Run all tests"
-	@echo "  $(YELLOW)make backend-test$(NC)         - Run backend tests with coverage"
-	@echo "  $(YELLOW)make backend-test-integration$(NC) - Integration tests only"
-	@echo "  $(YELLOW)make backend-test-e2e$(NC)     - E2E tests only"
+	@echo "  $(YELLOW)make test$(NC)                 - Run all tests (unit + integration + frontend)"
+	@echo "  $(YELLOW)make backend-test$(NC)         - Run all backend tests (unit + integration)"
+	@echo "  $(YELLOW)make backend-test-unit$(NC)    - Unit tests only (no DB, fast)"
+	@echo "  $(YELLOW)make backend-test-integration$(NC) - Integration tests (real DB)"
+	@echo "  $(YELLOW)make backend-test-coverage$(NC) - Tests with coverage report"
+	@echo "  $(YELLOW)make backend-validate-tests$(NC) - Validate test configuration"
 	@echo "  $(YELLOW)make frontend-test$(NC)        - Frontend tests"
 	@echo "  $(YELLOW)make lint$(NC)                 - Run linters (ruff, eslint)"
 	@echo "  $(YELLOW)make format$(NC)               - Format code (black, prettier)"
@@ -81,7 +83,6 @@ docker-up:
 	@echo "  Frontend:    $(BLUE)http://localhost:4200$(NC)"
 	@echo "  Backend:     $(BLUE)http://localhost:8000$(NC)"
 	@echo "  Database:    $(BLUE)postgresql://localhost:5432$(NC)"
-	@echo "  Adminer:     $(BLUE)http://localhost:8080$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Tip: Use 'make docker-logs' to view logs$(NC)"
 
@@ -148,29 +149,38 @@ frontend:
 # TESTING & CODE QUALITY
 # ============================================================================
 
-test: backend-test frontend-test
+test: backend-test-unit backend-test-integration frontend-test
 	@echo "$(GREEN)✅ All tests completed!$(NC)"
 
-backend-test:
-	@echo "$(GREEN)🧪 Running backend tests with coverage...$(NC)"
-	cd backend && python -m pytest tests/ -v --tb=short --cov=app --cov-report=html
-	@echo "$(GREEN)✅ Backend tests passed!$(NC)"
+backend-test: backend-test-unit backend-test-integration
+	@echo "$(GREEN)✅ All backend tests passed!$(NC)"
+
+backend-test-unit:
+	@echo "$(GREEN)🧪 Running backend unit tests (no DB)...$(NC)"
+	cd backend && python -m pytest tests/unit -m unit -v --tb=short --cov=app --cov-report=html
+	@echo "$(GREEN)✅ Unit tests passed!$(NC)"
 	@echo "$(BLUE)Coverage report: backend/htmlcov/index.html$(NC)"
 
 backend-test-integration:
-	@echo "$(GREEN)🧪 Running backend integration tests...$(NC)"
-	cd backend && python -m pytest tests/integration -v --tb=short
+	@echo "$(GREEN)🧪 Running backend integration tests (with real DB)...$(NC)"
+	cd backend && python -m pytest tests/integration -m integration -v --tb=short
 	@echo "$(GREEN)✅ Integration tests passed!$(NC)"
 
-backend-test-e2e:
-	@echo "$(GREEN)🧪 Running backend E2E tests...$(NC)"
-	cd backend && python -m pytest tests/e2e -v --tb=short
-	@echo "$(GREEN)✅ E2E tests passed!$(NC)"
+backend-test-coverage:
+	@echo "$(GREEN)🧪 Running all backend tests with coverage report...$(NC)"
+	cd backend && python -m pytest tests/unit tests/integration -v --tb=short --cov=app --cov-report=html --cov-report=term-missing
+	@echo "$(GREEN)✅ Tests completed!$(NC)"
+	@echo "$(BLUE)Coverage report: backend/htmlcov/index.html$(NC)"
 
 frontend-test:
 	@echo "$(GREEN)🧪 Running frontend tests...$(NC)"
 	cd frontend && npm run test -- --watch=false --coverage
 	@echo "$(GREEN)✅ Frontend tests passed!$(NC)"
+
+backend-validate-tests:
+	@echo "$(GREEN)✓ Validating test configuration...$(NC)"
+	cd backend && python validate_tests.py
+	@echo "$(GREEN)✅ Test configuration valid!$(NC)"
 
 lint:
 	@echo "$(GREEN)🔍 Running linters...$(NC)"
@@ -269,5 +279,3 @@ clean:
 	@echo "$(GREEN)✅ Cleanup complete!$(NC)"
 
 .DEFAULT_GOAL := help
-	@rm -f .env .env.local
-	@echo "✅ Cleanup complete!"

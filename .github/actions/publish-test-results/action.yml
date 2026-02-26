@@ -1,0 +1,11 @@
+name: "Publish Pytest Results"
+description: "Upload pytest junit xml"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      with:
+        name: pytest-results
+        path: backend/test-results.xml

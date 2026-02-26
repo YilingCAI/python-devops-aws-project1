@@ -1,373 +1,279 @@
-# New Team Member Onboarding
+# Onboarding — New Developer Guide
 
-Complete guide for new developers joining the team.
-
-## Welcome! 👋
-
-This guide will get you up and running in 30 minutes.
-
-## Prerequisites (15 min)
-
-### 1. System Requirements
-- **macOS 12+**, **Ubuntu 20.04+**, or **Windows with WSL2**
-- 10+ GB free disk space
-- 4+ GB RAM
-
-### 2. Install Required Tools
-
-#### macOS
-```bash
-# Install Homebrew if not already
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install tools
-brew install git python node docker terraform aws-cli
-
-# Start Docker
-open --app-path /Applications/Docker.app
-```
-
-#### Ubuntu
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  git python3 python3-venv nodejs npm \
-  docker.io docker-compose terraform awscli
-```
-
-#### Windows (WSL2)
-```bash
-# In WSL2 terminal
-sudo apt-get update
-sudo apt-get install -y git python3 python3-venv nodejs npm docker.io terraform awscli
-
-# Install Docker Desktop for Windows with WSL2 backend
-# https://docs.docker.com/desktop/install/windows-install/
-```
-
-### 3. Verify Installation
-```bash
-git --version        # git version 2.40+
-python3 --version   # Python 3.10+
-node --version      # Node 18+
-docker --version    # Docker 20.10+
-terraform --version # Terraform 1.5+
-aws --version       # AWS CLI v2
-```
-
-## Project Setup (10 min)
-
-### 1. Clone Repository
-```bash
-git clone https://github.com/yourteam/mypythonproject1.git
-cd mypythonproject1
-
-# Or if you have SSH set up:
-git clone git@github.com:yourteam/mypythonproject1.git
-cd mypythonproject1
-```
-
-### 2. Set Up Local Environment
-```bash
-# Create local env file
-cp config/.env.example .env.local
-
-# Edit with your preferred editor (use dummy values for local dev)
-nano .env.local
-# or
-code .env.local
-```
-
-**Minimum required values:**
-```env
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/myproject
-JWT_SECRET_KEY=local-dev-secret-key
-AWS_REGION=us-east-1
-```
-
-### 3. Install Dependencies
-```bash
-make install
-# Installs both backend and frontend dependencies
-```
-
-### 4. Start Local Development
-```bash
-# Terminal 1: Start backend
-make backend
-# Runs on http://localhost:8000
-
-# Terminal 2: Start frontend
-make frontend
-# Runs on http://localhost:4200
-
-# Terminal 3: Start database (if using Docker)
-docker-compose -f deploy/docker-compose.yml up postgres
-# Runs on localhost:5432
-```
-
-### 5. Verify It Works
-```bash
-# Open browser tabs:
-# - http://localhost:4200 (Frontend)
-# - http://localhost:8000/docs (Backend API docs)
-
-# Run tests
-make test
-```
-
-## Key Concepts (5 min)
-
-### Repository Structure
-```
-backend/              # FastAPI Python application
-frontend/             # Angular TypeScript application
-infra/               # AWS infrastructure (Terraform)
-scripts/             # DevOps scripts
-.github/workflows/   # GitHub Actions CI/CD
-config/              # Configuration templates
-docs/                # Documentation
-tests/               # Integration & E2E tests
-Makefile             # Unified CLI
-```
-
-### Development Workflow
-1. **Create feature branch**: `git checkout -b feature/my-feature`
-2. **Make changes** in backend/ or frontend/
-3. **Test locally**: `make test`
-4. **Format code**: `make format`
-5. **Push**: `git push origin feature/my-feature`
-6. **Open PR**: Create pull request on GitHub
-7. **Get approval**: Team reviews and approves
-8. **Merge**: Merge to develop (auto-deploys to staging)
-
-### Environments
-
-| Environment | Purpose | Access |
-|-------------|---------|--------|
-| **Local** | Development | Your machine |
-| **Staging** | Testing | Automatic on develop merge |
-| **Production** | Users | Manual approval on main merge |
-
-## Secrets Management
-
-### Important: Never Commit Secrets!
-
-✅ **DO:**
-- Store secrets in `.env.local` (gitignored)
-- Store CI/CD secrets in GitHub Secrets
-- Store runtime secrets in AWS Secrets Manager
-- Ask team if you need production credentials
-
-❌ **DON'T:**
-- Never commit `.env.local`
-- Never commit AWS credentials
-- Never hardcode API keys
-- Never share credentials in Slack
-
-See [config/secrets-management.md](../config/secrets-management.md) for details.
-
-## First Tasks
-
-### Day 1: Get Familiar
-```bash
-# Explore the codebase
-ls -la backend/
-ls -la frontend/
-
-# Read key documentation
-cat README.md
-cat docs/ARCHITECTURE.md
-cat docs/MAKE_REFERENCE.md
-
-# Run the app locally
-make dev
-
-# Poke around the API
-curl http://localhost:8000/docs  # Swagger UI
-curl http://localhost:8000/health
-
-# Explore frontend
-# Visit http://localhost:4200 in browser
-```
-
-### Day 2: Make a Change
-```bash
-# Create a branch
-git checkout -b onboarding/my-first-change
-
-# Make a small change (typo fix, comment, etc.)
-# In backend: add a comment to app/main.py
-# In frontend: add a comment to src/app/app.component.ts
-
-# Test it
-make test
-
-# Format it
-make format
-
-# Commit and push
-git add .
-git commit -m "docs: add onboarding comment"
-git push origin onboarding/my-first-change
-
-# Create PR on GitHub
-# (GitHub shows link in terminal)
-```
-
-### Day 3: Understand Infrastructure
-```bash
-# Read infrastructure docs
-cat infra/README.md
-cat docs/ARCHITECTURE.md
-
-# (Optional) Review Terraform code
-cat infra/main.tf
-cat infra/variables.tf
-
-# Understand deployment
-cat docs/DEPLOYMENT_GUIDE.md
-
-# Look at scripts
-ls -la scripts/
-cat scripts/setup-env.sh
-```
-
-## Common Commands
-
-```bash
-# Development
-make help              # See all available commands
-make dev               # Run everything locally
-make test              # Run all tests
-make lint              # Check code quality
-make format            # Auto-format code
-
-# Before committing
-make test
-make format
-make lint
-
-# Deployment (via GitHub only)
-# Don't run manually until you understand the system
-make tf-plan ENV=staging  # Plan infrastructure
-make deploy ENV=staging   # Deploy to staging
-```
-
-## Troubleshooting
-
-### Port Already in Use
-```bash
-# Backend already running?
-lsof -i :8000
-kill -9 <PID>
-
-# Frontend already running?
-lsof -i :4200
-kill -9 <PID>
-
-# Database already running?
-lsof -i :5432
-kill -9 <PID>
-```
-
-### Database Connection Failed
-```bash
-# Check .env.local
-echo $DATABASE_URL
-
-# Start database
-docker-compose -f deploy/docker-compose.yml up postgres
-
-# Try connecting
-psql $DATABASE_URL -c "SELECT 1"
-```
-
-### npm install Fails
-```bash
-# Clear cache
-npm cache clean --force
-
-# Delete node_modules
-cd frontend
-rm -rf node_modules package-lock.json
-
-# Reinstall
-npm install
-```
-
-### Python Dependencies Issue
-```bash
-# Recreate virtual environment
-cd backend
-rm -rf venv
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -e .
-```
-
-## Getting Help
-
-### Questions?
-1. Check [docs/TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md)
-2. Search issues on GitHub
-3. Ask in #engineering Slack channel
-4. Ask your onboarding buddy
-5. Schedule pair programming with team
-
-### Documentation
-- [README.md](../README.md) - Project overview
-- [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) - System design
-- [docs/MAKE_REFERENCE.md](../docs/MAKE_REFERENCE.md) - All commands
-- [backend/README.md](../backend/README.md) - Backend docs
-- [frontend/README.md](../frontend/README.md) - Frontend docs
-- [infra/README.md](../infra/README.md) - Infrastructure docs
-
-## Checking Your Setup
-
-Run this to verify everything is working:
-```bash
-# Should show all ✓
-make install
-make test
-make lint
-echo "✅ All setup!"
-```
-
-## Next Steps
-
-1. ✅ Complete this onboarding
-2. ✅ Make your first PR
-3. ✅ Get code review approved
-4. ✅ Merge to develop
-5. ✅ Watch it auto-deploy to staging
-6. 📚 Read [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)
-7. 📚 Read [docs/DEPLOYMENT_GUIDE.md](../docs/DEPLOYMENT_GUIDE.md)
-8. ✅ Pair program with senior dev
-9. ✅ You're ready to ship!
-
-## Your Onboarding Checklist
-
-- [ ] Installed all tools
-- [ ] Cloned repository
-- [ ] Created `.env.local`
-- [ ] Ran `make install`
-- [ ] Started `make dev`
-- [ ] Verified http://localhost:4200 works
-- [ ] Verified http://localhost:8000/docs works
-- [ ] Ran `make test`
-- [ ] Read main README.md
-- [ ] Read docs/ARCHITECTURE.md
-- [ ] Explored backend/ and frontend/ folders
-- [ ] Made first change on feature branch
-- [ ] Created first PR
-- [ ] Got code review approval
-- [ ] Merged to develop
-- [ ] Watched auto-deploy to staging
-- [ ] Celebrated! 🎉
+Everything you need to go from zero to a running local environment and your first merged PR. Estimated time: **30–45 minutes**.
 
 ---
 
-**Welcome to the team!** 🚀
+## Prerequisites
 
-If anything is unclear, ask. No question is too basic.
+Install these tools before starting:
+
+### macOS
+```bash
+# Homebrew
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# All required tools
+brew install git python@3.12 node terraform awscli
+brew install --cask docker
+
+# Open Docker Desktop before continuing
+open /Applications/Docker.app
+```
+
+### Ubuntu / Debian
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  git python3.12 python3-venv nodejs npm \
+  docker.io docker-compose
+
+# Terraform
+wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor \
+  | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
+  https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt-get update && sudo apt-get install terraform
+
+# AWS CLI v2
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+unzip awscliv2.zip && sudo ./aws/install
+```
+
+### Verify versions
+```bash
+git --version           # 2.40+
+python3 --version       # 3.12+
+node --version          # 20+
+docker --version        # 24+
+terraform --version     # 1.5+
+aws --version           # 2.x
+```
+
+---
+
+## Step 1 — Clone & install
+
+```bash
+git clone https://github.com/your-org/mypythonproject1.git
+cd mypythonproject1
+
+# Install all dependencies at once
+make install
+```
+
+`make install` installs:
+- Backend Python deps via Poetry (`backend/`)
+- Frontend Node deps via npm (`frontend/`)
+- Root CI tooling (commitlint + semantic-release)
+
+---
+
+## Step 2 — Configure local environment
+
+```bash
+cp config/.env.dev deploy/.env
+```
+
+`config/.env.dev` has all non-secret local-dev settings pre-configured (local Postgres host, debug=true, test JWT key). You do not need to add any secrets to run the app locally.
+
+---
+
+## Step 3 — Start the full stack
+
+```bash
+docker compose -f deploy/docker-compose.yml up --build
+```
+
+Wait for all containers to be healthy, then open:
+
+| URL | What |
+|---|---|
+| http://localhost:4200 | Angular frontend |
+| http://localhost:8000/docs | FastAPI OpenAPI docs |
+| http://localhost:8000/health | Health check (`{"status":"ok"}`) |
+
+### Run database migrations
+```bash
+docker compose -f deploy/docker-compose.yml exec backend \
+  alembic upgrade head
+```
+
+---
+
+## Step 4 — Run tests
+
+```bash
+# All tests
+make test
+
+# Backend only — unit tests (fast, no DB required)
+cd backend && poetry run pytest tests/unit -m unit -v
+
+# Backend — integration tests (needs postgres running)
+cd backend && poetry run pytest tests/integration -m integration -v
+
+# Frontend
+cd frontend && npm test
+```
+
+---
+
+## Step 5 — Understand the branch strategy
+
+```
+main         ← production-ready code only; never commit directly
+  └─ develop ← integration branch; merge feature branches here
+       └─ feature/your-feature ← your working branch
+```
+
+**Always branch from `develop`:**
+```bash
+git checkout develop
+git pull origin develop
+git checkout -b feature/my-new-feature
+```
+
+---
+
+## Step 6 — Write code & commit
+
+Commits **must** follow [Conventional Commits](https://www.conventionalcommits.org/). This is enforced by `commitlint` on every PR.
+
+```bash
+# Format: <type>(<optional scope>): <description>
+
+git commit -m "feat(game): add multiplayer room endpoints"
+git commit -m "fix(auth): refresh token not invalidated on logout"
+git commit -m "test: add user registration integration test"
+git commit -m "docs: update local setup instructions"
+```
+
+**Valid types:** `feat`, `fix`, `perf`, `refactor`, `revert`, `docs`, `style`, `test`, `build`, `ci`, `chore`
+
+If your commit fails commitlint, you'll see an error like:
+```
+⧗  input: WIP: some stuff
+✖  subject may not be empty [subject-empty]
+✖  type may not be empty [type-empty]
+```
+
+Fix it with `git commit --amend -m "fix(auth): correct typo in error message"`.
+
+---
+
+## Step 7 — Open a Pull Request → develop
+
+```bash
+git push origin feature/my-new-feature
+# Open PR on GitHub targeting the develop branch
+```
+
+The CI pipeline (`ci.yml`) runs automatically. All jobs must pass before merging:
+
+| Check | Description |
+|---|---|
+| Commitlint | All commits in the PR follow Conventional Commits |
+| Backend CI | Lint (ruff) + unit + integration tests |
+| Frontend CI | ESLint + TypeScript + build |
+| Security Scan | Trivy + GitGuardian |
+| Dependency Audit | Snyk |
+| Terraform Plan | Shows infra diff on PR (if `infra/` changed) |
+| Quality Gate | Single required check summarising all above |
+
+---
+
+## Step 8 — After merge to develop
+
+Your changes automatically deploy to **staging** via `staging.yml`:
+
+1. Docker images built and pushed to GHCR
+2. Terraform applies any infra changes to staging
+3. ECS rolls out new containers
+4. Smoke test hits `/health` — if it fails, the deploy is marked failed
+
+Check the deployment at:
+```
+https://github.com/your-org/mypythonproject1/actions/workflows/staging.yml
+```
+
+Staging URL: configured in `config/.env.staging` → `APP_URL`.
+
+---
+
+## Common Commands Cheatsheet
+
+```bash
+# Start everything locally
+make dev
+
+# Run all tests
+make test
+
+# Lint code
+make lint
+
+# Format code
+make format
+
+# Run only backend
+make backend
+
+# Run only frontend
+make frontend
+
+# View all make targets
+make help
+```
+
+---
+
+## Troubleshooting
+
+### `make install` fails on poetry
+```bash
+pip install --upgrade pip
+pip install poetry
+poetry --version
+```
+
+### Docker compose postgres fails to start
+```bash
+# Check if port 5432 is already in use
+lsof -i :5432
+# Kill the conflicting process or change DATABASE_PORT in deploy/.env
+```
+
+### `alembic upgrade head` — "can't connect to postgres"
+Make sure the postgres container is running:
+```bash
+docker compose -f deploy/docker-compose.yml ps
+```
+
+### Frontend — `npm ci` fails
+```bash
+# Clear cache and retry
+cd frontend
+rm -rf node_modules package-lock.json
+npm install
+```
+
+### Commitlint fails on push
+Edit the failing commit:
+```bash
+git commit --amend -m "fix(scope): proper conventional commit message"
+```
+Or use interactive rebase to fix multiple commits:
+```bash
+git rebase -i HEAD~3
+```
+
+---
+
+## Getting Help
+
+- Architecture overview: [docs/ARCHITECTURE.md](ARCHITECTURE.md)
+- Test strategy: [docs/TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md)
+- Infrastructure details: [infra/README.md](../infra/README.md)
+- Backend API: [backend/README.md](../backend/README.md)
+- Frontend: [frontend/README.md](../frontend/README.md)

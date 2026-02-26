@@ -1,0 +1,272 @@
+###############################################################################
+# CD — Staging Deployment
+###############################################################################
+# Responsibilities:
+#   • Build & push backend + frontend container images → GHCR
+#   • Trivy image scan (warn, non-blocking)
+#   • Terraform apply for staging environment
+#   • ECS rolling deploy (backend + frontend)
+#   • Smoke test after deployment
+#
+# Triggers:
+#   • workflow_run: CI workflow succeeds on develop (ensures quality gate passes first)
+#   • workflow_dispatch (manual re-deploy)
+#
+# ALL secrets are injected via GitHub Environment "staging" — no plaintext.
+# Non-secret config loaded from config/.env.staging.
+###############################################################################
+name: CD — Staging
+
+on:
+    # Only run after CI completes successfully on the develop branch.
+    # This ensures staging never deploys code that has not passed the quality gate.
+    workflow_run:
+        workflows: ["CI"]
+        branches: [develop]
+        types: [completed]
+    workflow_dispatch:
+        inputs:
+            force-deploy:
+                description: "Force deploy even if no code changes"
+                required: false
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+    packages: write # Push to GHCR
+    id-token: write # AWS OIDC
+
+# Only one staging deploy runs at a time; newer commits cancel older ones
+concurrency:
+    group: staging-deploy
+    cancel-in-progress: true
+
+jobs:
+    # =========================================================================
+    # 1. BUILD — Docker images (backend + frontend)
+    # =========================================================================
+    build:
+        name: Build & Push (${{ matrix.service }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        # Gate: skip unless triggered manually OR the upstream CI run succeeded.
+        if: >
+            github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'workflow_run' &&
+             github.event.workflow_run.conclusion == 'success')
+        strategy:
+            matrix:
+                service: [backend, frontend]
+            fail-fast: true
+        outputs:
+            image-tag: ${{ steps.meta.outputs.version }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  # Check out the exact commit that passed CI, not the workflow file's HEAD.
+                  ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+            - name: Load staging environment
+              run: |
+                  grep -v '^\s*#' config/.env.staging | grep -v '^\s*$' >> $GITHUB_ENV
+
+            - name: Set image metadata
+              id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.service }}
+                  tags: |
+                      type=raw,value=staging
+                      type=sha,prefix=staging-,format=short
+                      type=ref,event=branch
+
+            - name: Log in to GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Build & push
+              uses: docker/build-push-action@v5
+              with:
+                  context: ./${{ matrix.service }}
+                  file: ./${{ matrix.service }}/Dockerfile
+                  push: true
+                  tags: ${{ steps.meta.outputs.tags }}
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha,scope=${{ matrix.service }}-staging
+                  cache-to: type=gha,scope=${{ matrix.service }}-staging,mode=max
+                  build-args: |
+                      BUILD_ENV=staging
+                      GIT_SHA=${{ github.sha }}
+
+    # =========================================================================
+    # 2. IMAGE SECURITY SCAN (Trivy — warn only, non-blocking)
+    # =========================================================================
+    scan:
+        name: Scan Images (${{ matrix.service }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        needs: [build]
+        strategy:
+            matrix:
+                service: [backend, frontend]
+            fail-fast: false
+        steps:
+            - name: Load staging environment
+              run: |
+                  grep -v '^\s*#' config/.env.staging | grep -v '^\s*$' >> $GITHUB_ENV
+
+            - name: Trivy image scan
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: "${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.service }}:staging-${{ github.event.workflow_run.head_sha || github.sha }}"
+                  format: "sarif"
+                  output: "trivy-${{ matrix.service }}.sarif"
+                  severity: "CRITICAL,HIGH"
+              continue-on-error: true # Warn only — staging may have acceptable risk
+
+            - name: Upload scan results
+              uses: github/codeql-action/upload-sarif@v3
+              with:
+                  sarif_file: "trivy-${{ matrix.service }}.sarif"
+                  category: "trivy-${{ matrix.service }}-staging"
+
+    # =========================================================================
+    # 3. TERRAFORM APPLY — staging infrastrastructure
+    # =========================================================================
+    terraform-staging:
+        name: Terraform Apply (staging)
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        needs: [build]
+        environment: staging # GitHub environment with approval gates if needed
+        permissions:
+            contents: read
+            id-token: write
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Load staging environment
+              run: |
+                  grep -v '^\s*#' config/.env.staging | grep -v '^\s*$' >> $GITHUB_ENV
+
+            - uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: ${{ env.TF_VERSION }}
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Terraform init (remote state)
+              working-directory: infra
+              run: |
+                  terraform init \
+                    -backend-config="bucket=${{ secrets.TERRAFORM_STATE_BUCKET }}" \
+                    -backend-config="key=staging/terraform.tfstate" \
+                    -backend-config="region=${{ env.AWS_REGION }}" \
+                    -backend-config="dynamodb_table=${{ secrets.TERRAFORM_LOCK_TABLE }}"
+
+            - name: Terraform plan (staging)
+              working-directory: infra
+              env:
+                  TF_VAR_environment: staging
+                  TF_VAR_aws_region: ${{ env.AWS_REGION }}
+              run: |
+                  terraform plan \
+                    -var-file="envs/staging.tfvars" \
+                    -out=tfplan.staging \
+                    -no-color
+
+            - name: Terraform apply (staging)
+              working-directory: infra
+              run: terraform apply -auto-approve tfplan.staging
+
+    # =========================================================================
+    # 4. DEPLOY — ECS rolling update (backend + frontend)
+    # =========================================================================
+    deploy-staging:
+        name: Deploy to Staging (${{ matrix.service }})
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        needs: [terraform-staging]
+        environment: staging
+        strategy:
+            matrix:
+                service: [backend, frontend]
+            fail-fast: false
+        permissions:
+            id-token: write
+        steps:
+            - name: Load staging environment
+              run: |
+                  grep -v '^\s*#' config/.env.staging | grep -v '^\s*$' >> $GITHUB_ENV
+
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Update ECS service
+              run: |
+                  aws ecs update-service \
+                    --cluster  "${{ env.ECS_CLUSTER }}" \
+                    --service  "${{ env.ECS_SERVICE_PREFIX }}-${{ matrix.service }}" \
+                    --force-new-deployment \
+                    --region   "${{ env.AWS_REGION }}"
+
+            - name: Wait for deployment stability
+              timeout-minutes: 10
+              run: |
+                  aws ecs wait services-stable \
+                    --cluster "${{ env.ECS_CLUSTER }}" \
+                    --services "${{ env.ECS_SERVICE_PREFIX }}-${{ matrix.service }}" \
+                    --region  "${{ env.AWS_REGION }}"
+
+    # =========================================================================
+    # 5. SMOKE TEST
+    # =========================================================================
+    smoke-test:
+        name: Smoke Test
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        needs: [deploy-staging]
+        environment: staging
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Load staging environment
+              run: |
+                  grep -v '^\s*#' config/.env.staging | grep -v '^\s*$' >> $GITHUB_ENV
+
+            - name: Health check
+              run: |
+                  echo "Waiting for service to warm up..."
+                  sleep 15
+                  STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+                    "${{ env.APP_URL }}/health" --max-time 10 || echo "000")
+                  echo "Health check status: $STATUS"
+                  [[ "$STATUS" == "200" ]] || { echo "❌ Health check failed ($STATUS)"; exit 1; }
+                  echo "✅ Smoke test passed"
+
+            - name: Write deployment summary
+              if: always()
+              run: |
+                  {
+                    echo "## Staging Deployment"
+                    echo "| Field | Value |"
+                    echo "|-------|-------|"
+                    echo "| Commit | \`${{ github.event.workflow_run.head_sha || github.sha }}\` |"
+                    echo "| Branch | \`${{ github.ref_name }}\` |"
+                    echo "| URL    | ${{ env.APP_URL }} |"
+                    echo "| Status | ${{ job.status }} |"
+                  } >> $GITHUB_STEP_SUMMARY

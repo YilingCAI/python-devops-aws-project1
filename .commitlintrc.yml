@@ -1,0 +1,47 @@
+# ============================================================
+# commitlint — Conventional Commits enforcement
+# Docs: https://commitlint.js.org
+# ============================================================
+extends:
+  - "@commitlint/config-conventional"
+
+rules:
+  # Header length cap
+  header-max-length: [2, "always", 100]
+
+  # Body must have a blank line above it (enforced by convention)
+  body-leading-blank: [2, "always"]
+
+  # Footer must have a blank line above it
+  footer-leading-blank: [1, "always"]
+
+  # Type must be one of the allowed types
+  type-enum:
+    - 2
+    - "always"
+    - - feat # new feature (triggers minor bump)
+      - fix # bug fix (triggers patch bump)
+      - perf # performance improvement (triggers patch bump)
+      - refactor # code change that neither fixes a bug nor adds a feature
+      - revert # revert a previous commit
+      - docs # documentation only
+      - style # formatting, missing semi-colons, etc.
+      - test # adding or fixing tests
+      - build # changes to build system or external dependencies
+      - ci # changes to CI/CD configuration
+      - chore # maintenance tasks
+
+  # Subject case: lower-case start is fine; forbid sentence/pascal/upper
+  subject-case:
+    - 2
+    - "never"
+    - [sentence-case, start-case, pascal-case, upper-case]
+
+  # Subject must not end with a period
+  subject-full-stop: [2, "never", "."]
+
+  # Subject must not be empty
+  subject-empty: [2, "never"]
+
+  # Type must not be empty
+  type-empty: [2, "never"]
