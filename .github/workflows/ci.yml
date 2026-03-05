@@ -127,7 +127,7 @@ jobs:
             POSTGRES_USER:     ${{ secrets.DATABASE_USER }}
             POSTGRES_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
             POSTGRES_DB:       ${{ secrets.DATABASE_NAME }}
-            POSTGRES_PORT:     ${{ secrets.DATABASE_PORT }}
+            POSTGRES_PORT:     ${{ vars.POSTGRES_PORT }}
         services:
             postgres:
                 image: postgres:16-alpine
@@ -141,7 +141,7 @@ jobs:
                     --health-timeout 5s
                     --health-retries 5
                 ports:
-                    - ${{ env.POSTGRES_PORT }}:5432
+                  - "${{ vars.POSTGRES_PORT }}:5432"
                     
 
         steps:
@@ -152,6 +152,7 @@ jobs:
               # CI tooling vars (TF_VERSION, REGISTRY) from config/.env.test
               run: |
                   grep -v '^\s*#' config/.env.test | grep -v '^\s*$' >> $GITHUB_ENV
+                  echo "POSTGRES_PORT=${{ vars.POSTGRES_PORT }}" >> $GITHUB_ENV
 
             - uses: actions/setup-python@v5
               with:
