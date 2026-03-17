@@ -10,7 +10,7 @@ version: 2
 # Ecosystem Coverage:
 #   ✓ Python (Poetry) - /backend
 #   ✓ Docker (Base images) - /backend, /frontend
-#   ✓ Terraform (Providers/Modules) - /infra
+#   ✓ Terraform (Providers/Modules) - moved to infra repository
 #   ✓ GitHub Actions (Workflow versions) - /
 #
 # CI Integration:
@@ -130,47 +130,7 @@ updates:
       prefix: "build(docker):"
       include: "scope"
 
-  # ============================================================================
-  # TERRAFORM: Infrastructure as Code
-  # ============================================================================
-  # Manages AWS provider versions and Terraform modules
-  #
-  # Strategy:
-  #   - Weekly updates (Tuesday 04:00 UTC)
-  #   - Max 3 open PRs (moderate: requires infrastructure review)
-  #   - All versions allowed (Terraform handles most upgrades)
-  #   - Security-focused: Always on latest provider versions
-  #
-  # Why Terraform Updates?
-  #   - AWS provider includes new resources and bug fixes
-  #   - Terraform maintains compatibility across major versions
-  #   - Infrastructure tests validate changes via CI
-  #   - ECS Fargate deployment orchestrated through Terraform
-  #
-  # NOTE: Do NOT modify Terraform code directly
-  #   - Dependabot only updates provider/module versions
-  #   - Resource configurations remain unchanged
-  #   - CI validates all infrastructure changes
-  # ============================================================================
-  - package-ecosystem: "terraform"
-    directory: "/infra"
-    schedule:
-      interval: "weekly"
-      day: "tuesday"
-      time: "04:00"
-    open-pull-requests-limit: 3
-    labels:
-      - "infra"
-      - "dependencies"
-      - "terraform"
-    pull-request-branch-name:
-      separator: "/"
-    commit-message:
-      prefix: "build(terraform):"
-      include: "scope"
-    # Allow major version updates for terraform to ensure latest provider support
-    allow:
-      - dependency-type: "all"
+  # Terraform dependency updates are managed in mypythonproject1-infra.
 
   # ============================================================================
   # GITHUB ACTIONS: Workflow Versions

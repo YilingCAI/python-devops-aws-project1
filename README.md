@@ -1,154 +1,115 @@
-# MyPythonProject1
+Project Composition
+Enterprise Multi-Infrastructure DevOps Project
 
-Production-ready full-stack app with FastAPI + Angular + PostgreSQL on AWS ECS Fargate, provisioned by Terraform and delivered through GitHub Actions.
+1. Project Composition
 
-## High-level architecture
+Application Stack (shared across all infra projects)
+	•	Backend: Python (FastAPI)
+	•	Frontend: Angular
+	•	Database: PostgreSQL (AWS RDS)
+	•	Containerization: Docker
+	•	Environments: Dev, Staging, Prod
 
-- Frontend: Angular app served by Nginx in ECS Fargate
-- Backend: FastAPI service in ECS Fargate
-- Database: PostgreSQL on AWS RDS
-- Networking: ALB + VPC (public/private/db subnets)
-- Runtime secrets: AWS Secrets Manager
-- Infra state: S3 backend with native lockfile locking (`use_lockfile=true`)
-- Images: Amazon ECR for both staging and production deploy flows
+Deployment Strategies / Infra Repos
 
-## Repository structure
+Repo / Infra	Compute	Deployment	CI/CD	IaC
+platform-infra-fargate	ECS Fargate	Terraform	GitHub Actions	Terraform modules
+platform-infra-ec2	EC2 + ASG	Ansible (provision) + Terraform	GitHub Actions	Terraform + Ansible
+platform-infra-eks	EKS	GitOps (ArgoCD + Helm)	GitHub Actions → ArgoCD	Terraform modules + Helm charts
 
-```text
-.
-├── backend/          # FastAPI service + alembic + tests
-├── frontend/         # Angular application
-├── infra/            # Terraform root + modules + env tfvars
-├── deploy/           # docker-compose local stack
-├── config/           # env templates and ops guides
-├── docs/             # architecture / onboarding / testing docs
-└── .github/          # workflows and composite CI/CD actions
-```
 
-## Local development
+⸻
 
-### Prerequisites
+1. Architecture Overview
 
-- Docker Desktop
-- Python 3.12+
-- Poetry
-- Node.js 20+
-- Make
+2.1 Shared Components
+	•	Networking: VPC per infra, multi-AZ subnets, NAT gateway, private/public segregation
+	•	IAM: Least privilege, separate roles per CI/CD, per service, per environment
+	•	Logging & Monitoring: CloudWatch for all infra; Prometheus + Grafana for EKS
+	•	Security: Encrypted RDS/ECR, security groups per service, CloudTrail & GuardDuty
 
-### Start full stack
+2.2 Fargate Infra
 
-```bash
-make install
-cp config/.env.dev deploy/.env
-docker compose -f deploy/docker-compose.yml up --build
-```
+          +-------------------------+
+          |        ALB              |
+          +-----------+-------------+
+                      |
+           +----------+----------+
+           | ECS Cluster (Fargate)|
+           +----+----------+-----+
+           |    |          |     |
+       Backend Frontend  Workers  # optional
+          |     |          |
+         ECR   ECR        ECR
+          |
+        CloudWatch logs
+          |
+         RDS (private)
 
-URLs:
+2.3 EC2 + Ansible Infra
 
-- Frontend: http://localhost:4200
-- Backend: http://localhost:8000
-- API docs: http://localhost:8000/docs
-- Health: http://localhost:8000/health
+         +----------------------+
+         |        ALB           |
+         +-----------+----------+
+                     |
+           +---------+----------+
+           | EC2 ASG (Backend) |
+           | EC2 ASG (Frontend)|
+           +---------+----------+
+                     |
+                   Ansible Playbooks
+                     |
+                  CloudWatch Logs
+                     |
+                    RDS (private)
 
-## Testing
+2.4 EKS + ArgoCD + Helm Infra
 
-```bash
-make test
-make backend-test
-make frontend-test
-```
+Root App (ArgoCD)
+ ├── Non-Prod Cluster (EKS)
+ │    ├── Namespace: dev
+ │    │     ├── backend
+ │    │     └── frontend
+ │    └── Namespace: staging
+ │          ├── backend
+ │          └── frontend
+ └── Prod Cluster (EKS)
+      └── Namespace: prod
+            ├── backend
+            └── frontend
+                |
+                Helm charts
+                |
+                RDS (private)
 
-Backend split:
+	•	App-of-Apps pattern for dev/staging/prod
+	•	Manual approval for prod
+	•	Prometheus + Grafana + CloudWatch for monitoring
 
-```bash
-cd backend
-poetry run pytest tests/unit -m unit -v
-poetry run pytest tests/integration -m integration -v
-```
+⸻
 
-## CI/CD
+3. Terraform Modules (per repo)
 
-Detailed reference: `.github/GITHUB_ACTIONS_CICD.md`
+Common modules
+	•	vpc/ → VPC, subnets, NAT, route tables, security groups
+	•	iam/ → Roles for CI/CD, service accounts, ECS/EKS nodes
+	•	ecr/ → Docker repos for backend/frontend
+	•	rds/ → PostgreSQL with encryption, backups, multi-AZ
+	•	security/ → SGs, NACLs, private endpoints
 
-- `ci.yml`
-  - Trigger: PR/push on `main` and `develop`
-  - Runs lint/tests/security/dependency audit + Terraform fmt/validate/plan
-  - Does not deploy
-- `staging.yml`
-  - Trigger: successful CI workflow on `develop` or manual dispatch
-  - Builds/pushes backend+frontend images to ECR
-  - Applies Terraform for staging
-  - Forces ECS rollout and runs smoke test
-- `release.yml`
-  - Flow 1: successful CI on `main` runs semantic-release
-  - Flow 2: `v*` tag builds/pushes ECR images, applies prod Terraform, deploys ECS, runs smoke test
+Infra-specific modules
+	•	Fargate: ecs-cluster/, ecs-service/, alb/
+	•	EC2: ec2/, alb/
+	•	EKS: eks/, helm-charts/ (values per env)
 
-## Environment configuration
+⸻
 
-Non-secret configuration files:
+4. CI/CD Strategy
 
-- `config/.env.dev` (local docker compose)
-- `config/.env.test` (tests/CI)
-- `config/.env.staging` (staging workflow runtime config)
-- `config/.env.production` (reference values)
+Infra	Pipeline Flow
+Fargate	Build Docker → Push ECR → Terraform apply ECS → CloudWatch logs
+EC2	Build Docker → Push ECR → Ansible deploy → CloudWatch logs
+EKS	Build Docker → Push ECR → Update Helm values → ArgoCD auto-sync (dev/staging) / manual sync (prod) → Prometheus + Grafana metrics
 
-Operational docs:
-
-- `config/environment-setup.md`
-- `config/secrets-management.md`
-
-## Manual infrastructure commands
-
-From repository root:
-
-```bash
-make tf-validate ENV=staging
-make tf-plan ENV=staging
-make tf-apply ENV=staging
-```
-
-Destroy (destructive):
-
-```bash
-make tf-destroy ENV=staging
-```
-
-## AWS bootstrap
-
-At minimum, create:
-
-1. S3 bucket for Terraform state
-2. GitHub OIDC provider in IAM
-3. IAM roles assumed by GitHub Actions environments (`staging`, `production`)
-4. ECR repositories for backend/frontend images
-
-Run bootstrap:
-
-```bash
-make bootstrap
-```
-
-Optional inputs:
-
-```bash
-GITHUB_ORG=<org> GITHUB_REPO=<repo> AWS_REGION=us-east-1 make bootstrap
-```
-
-See `infra/README.md` for full bootstrap and IAM guidance.
-
-## Versioning
-
-- Commits follow Conventional Commits
-- `release.yml` uses semantic-release to generate version tags and release notes
-- Production deploys are triggered by semantic tags (`v*`)
-
-## Common commands
-
-```bash
-make help
-make lint
-make format
-make backend
-make frontend
-make dev
-```
+	•	Speculative Terraform plan before merge
+	•	Manual approval for prod deployments

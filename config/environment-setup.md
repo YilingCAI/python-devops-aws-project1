@@ -5,8 +5,8 @@ How local, staging, and production environments are configured and promoted.
 ## Environment types
 
 - Local: `config/.env.dev` copied to `deploy/.env`
-- Staging: `infra/envs/staging.tfvars` + GitHub Environment `staging`
-- Production: `infra/envs/prod.tfvars` + GitHub Environment `production`
+- Staging: `../mypythonproject1-infra/environments/staging/terraform.tfvars` + GitHub Environment `staging`
+- Production: `../mypythonproject1-infra/environments/prod/terraform.tfvars` + GitHub Environment `production`
 
 ## Local development
 
@@ -24,7 +24,7 @@ open http://localhost:4200
 
 ## Staging setup
 
-1. Configure `infra/envs/staging.tfvars`
+1. Configure `../mypythonproject1-infra/environments/staging/terraform.tfvars`
 2. Configure GitHub Environment `staging` secrets:
    - `AWS_ROLE_TO_ASSUME`
    - `TERRAFORM_STATE_BUCKET`
@@ -42,7 +42,7 @@ Deploy flow:
 
 ## Production setup
 
-1. Configure `infra/envs/prod.tfvars`
+1. Configure `../mypythonproject1-infra/environments/prod/terraform.tfvars`
 2. Configure GitHub Environment `production` secrets:
    - `AWS_ROLE_TO_ASSUME`
    - `AWS_REGION`
