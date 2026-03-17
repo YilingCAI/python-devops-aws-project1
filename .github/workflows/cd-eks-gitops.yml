@@ -1,0 +1,562 @@
+###############################################################################
+# CD — Option 2: EKS / ArgoCD GitOps Deployment
+###############################################################################
+#
+# Repository separation (three-repo GitOps model):
+#   mypythonproject1             ← app code + this workflow (YOU ARE HERE)
+#   mypythonproject1-infra2      ← Terraform for EKS infrastructure
+#   mypythonproject1-gitops      ← Helm charts + ArgoCD Application manifests
+#
+# Pipeline:
+#   ┌─────────────────────────────────────────────────────────────────┐
+#   │  1. CI passes on develop / tag v*                               │
+#   │  2. Build & push image to ECR (digest pinned)                   │
+#   │  3. Update image tag in gitops repo (environments/<env>/        │
+#   │     values.yaml) via a commit to main                           │
+#   │  4. ArgoCD detects the commit and auto-syncs (App-of-Apps)      │
+#   │  5. Smoke test via ArgoCD health status poll                    │
+#   └─────────────────────────────────────────────────────────────────┘
+#
+# This workflow does NOT run Terraform — infrastructure is managed by a
+# dedicated pipeline in mypythonproject1-infra2.
+#
+# Secrets (GitHub Environments "staging" and "production"):
+#   AWS_ROLE_TO_ASSUME   — OIDC role ARN with ECR push permission
+#   AWS_REGION           — e.g. us-east-1
+#   GITOPS_DEPLOY_TOKEN  — PAT (contents:write) on mypythonproject1-gitops
+#   ARGOCD_SERVER        — ArgoCD server hostname (no https://)
+#   ARGOCD_TOKEN         — ArgoCD API token for health poll
+#
+# Variables (GitHub Environments):
+#   APP_URL              — Base URL for smoke test health check
+###############################################################################
+name: "CD \u2014 EKS/ArgoCD GitOps"
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [develop]
+    types: [completed]
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [staging, production]
+        default: staging
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    ${{ startsWith(github.ref, 'refs/tags/v') && 'cd-gitops-production'
+     || github.event_name == 'workflow_dispatch' && format('cd-gitops-{0}', inputs.environment)
+     || 'cd-gitops-staging' }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+###############################################################################
+# ─── DEV ────────────────────────────────────────────────────────────────────
+###############################################################################
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 0a. Build + push dev images (every CI success on develop)
+  # ---------------------------------------------------------------------------
+  build-dev:
+    name: "Build & Push [dev] (${{ matrix.service }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: >
+      (github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success')
+      || (github.event_name == 'workflow_dispatch'
+        && inputs.environment == 'staging')
+    environment: staging
+    strategy:
+      matrix:
+        service: [backend, frontend]
+      fail-fast: true
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Compute short SHA
+        id: meta
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "sha-short=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate with AWS
+        uses: ./.github/actions/aws-auth
+        with:
+          role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag & push
+        id: build
+        uses: ./.github/actions/docker-build
+        with:
+          context: ./${{ matrix.service }}
+          dockerfile: ./${{ matrix.service }}/Dockerfile
+          image-name: mypythonproject1/${{ matrix.service }}
+          registry: ${{ steps.ecr-login.outputs.registry }}
+          tags: |
+            type=raw,value=dev
+            type=sha,prefix=dev-,format=short
+          build-args: |
+            BUILD_ENV=dev
+            GIT_SHA=${{ github.event.workflow_run.head_sha || github.sha }}
+          platforms: linux/amd64
+          scan: "true"
+          scan-severity: "CRITICAL"
+          scan-exit-code: "0"
+          cache-scope: ${{ matrix.service }}-dev
+
+  # ---------------------------------------------------------------------------
+  # 0b. Update gitops repo — dev values (fast, no approval gate)
+  # ---------------------------------------------------------------------------
+  update-gitops-dev:
+    name: "Update GitOps Repo [dev]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-dev]
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/python-angular-project1-gitops
+          token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
+          path: gitops
+
+      - name: Compute new image tag
+        id: tag
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "new-tag=dev-${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Patch dev values — backend + frontend
+        run: |
+          FILE="gitops/environments/dev/values.yaml"
+          docker run --rm -v "$PWD/gitops:/gitops" mikefarah/yq:4 \
+            e '.backend.image.tag = "${{ steps.tag.outputs.new-tag }}" | .frontend.image.tag = "${{ steps.tag.outputs.new-tag }}"' \
+            -i /gitops/environments/dev/values.yaml
+
+      - name: Commit & push to gitops repo
+        run: |
+          cd gitops
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add environments/dev/values.yaml
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore(deploy): dev image tag ${{ steps.tag.outputs.new-tag }} [skip ci]"
+          git push origin main
+
+###############################################################################
+# ─── STAGING ────────────────────────────────────────────────────────────────
+###############################################################################
+  # ---------------------------------------------------------------------------
+  # 1a. Build + push staging images to ECR; output digest for immutable ref
+  # ---------------------------------------------------------------------------
+  build-staging:
+    name: "Build & Push [staging] (${{ matrix.service }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: >
+      (github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success')
+      || (github.event_name == 'workflow_dispatch'
+        && inputs.environment == 'staging')
+    environment: staging
+    strategy:
+      matrix:
+        service: [backend, frontend]
+      fail-fast: true
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      # Each matrix leg writes its own digest; consumed by update-gitops-staging
+      backend-digest:  ${{ steps.digest.outputs.backend-digest }}
+      frontend-digest: ${{ steps.digest.outputs.frontend-digest }}
+      sha-short:       ${{ steps.meta.outputs.sha-short }}
+      registry:        ${{ steps.ecr-login.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Compute short SHA
+        id: meta
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "sha-short=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate with AWS
+        uses: ./.github/actions/aws-auth
+        with:
+          role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag & push
+        id: build
+        uses: ./.github/actions/docker-build
+        with:
+          context: ./${{ matrix.service }}
+          dockerfile: ./${{ matrix.service }}/Dockerfile
+          image-name: mypythonproject1/${{ matrix.service }}
+          registry: ${{ steps.ecr-login.outputs.registry }}
+          tags: |
+            type=raw,value=staging
+            type=sha,prefix=staging-,format=short
+          build-args: |
+            BUILD_ENV=staging
+            GIT_SHA=${{ github.event.workflow_run.head_sha || github.sha }}
+          platforms: linux/amd64
+          scan: "true"
+          scan-severity: "CRITICAL,HIGH"
+          scan-exit-code: "0"
+          cache-scope: ${{ matrix.service }}-staging
+
+      - name: Export image digest
+        id: digest
+        run: |
+          echo "${{ matrix.service }}-digest=${{ steps.build.outputs.image-digest }}" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # 1b. Update image tags in gitops repo (staging values)
+  # ---------------------------------------------------------------------------
+  update-gitops-staging:
+    name: "Update GitOps Repo [staging]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-staging]
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/python-angular-project1-gitops
+          token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
+          path: gitops
+
+      - name: Compute new image tag
+        id: tag
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "new-tag=staging-${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Patch staging values — backend
+        run: |
+          FILE="gitops/environments/staging/values.yaml"
+          # Use yq to update only the image.tag fields — avoids sed fragility
+          docker run --rm -v "$PWD/gitops:/gitops" \
+            mikefarah/yq:4 \
+            e '.backend.image.tag = "${{ steps.tag.outputs.new-tag }}"' \
+            -i /gitops/environments/staging/values.yaml
+          echo "Backend image.tag patched to ${{ steps.tag.outputs.new-tag }}"
+
+      - name: Patch staging values — frontend
+        run: |
+          docker run --rm -v "$PWD/gitops:/gitops" \
+            mikefarah/yq:4 \
+            e '.frontend.image.tag = "${{ steps.tag.outputs.new-tag }}"' \
+            -i /gitops/environments/staging/values.yaml
+          echo "Frontend image.tag patched to ${{ steps.tag.outputs.new-tag }}"
+
+      - name: Commit & push to gitops repo
+        run: |
+          cd gitops
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add environments/staging/values.yaml
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "chore(deploy): staging image tag ${{ steps.tag.outputs.new-tag }} [skip ci]"
+          git push origin main
+
+  # ---------------------------------------------------------------------------
+  # 1c. Wait for ArgoCD to sync staging and report health
+  # ---------------------------------------------------------------------------
+  argocd-sync-staging:
+    name: "ArgoCD Sync [staging]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [update-gitops-staging]
+    environment: staging
+    steps:
+      - name: Poll ArgoCD application health
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_TOKEN:  ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          APP="mypythonproject1-staging"
+          MAX=30        # 30 × 30s = 15 min
+          SLEEP=30
+
+          for i in $(seq 1 $MAX); do
+            RESP=$(curl -sf \
+              -H "Authorization: Bearer $ARGOCD_TOKEN" \
+              "https://${ARGOCD_SERVER}/api/v1/applications/${APP}" || true)
+
+            HEALTH=$(echo "$RESP" | jq -r '.status.health.status // "Unknown"')
+            SYNC=$(echo   "$RESP" | jq -r '.status.sync.status   // "Unknown"')
+            echo "[$i/$MAX] health=$HEALTH  sync=$SYNC"
+
+            if [[ "$HEALTH" == "Healthy" && "$SYNC" == "Synced" ]]; then
+              echo "✅ ArgoCD: $APP is Healthy and Synced"
+              exit 0
+            fi
+
+            if [[ "$HEALTH" == "Degraded" ]]; then
+              echo "❌ ArgoCD: $APP health is Degraded — failing fast"
+              exit 1
+            fi
+
+            sleep $SLEEP
+          done
+
+          echo "❌ Timeout: $APP did not become Healthy+Synced within $((MAX * SLEEP / 60)) min"
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # 1d. Smoke test (staging)
+  # ---------------------------------------------------------------------------
+  smoke-test-staging:
+    name: "Smoke Test [staging]"
+    needs: [argocd-sync-staging]
+    uses: ./.github/workflows/_smoke-test.yml
+    with:
+      environment: staging
+      app-url: ${{ vars.APP_URL }}
+      warmup-seconds: 15
+      deploy-sha: ${{ github.event.workflow_run.head_sha || github.sha }}
+    secrets: inherit
+
+###############################################################################
+# ─── PRODUCTION ─────────────────────────────────────────────────────────────
+###############################################################################
+
+  # ---------------------------------------------------------------------------
+  # 2a. Semantic release on CI success from main → creates tag
+  # ---------------------------------------------------------------------------
+  autoversion:
+    name: "Semantic Release"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_branch == 'main'
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: .github/package-lock.json
+
+      - name: Install semantic-release
+        working-directory: .github
+        run: npm ci --ignore-scripts
+
+      - name: Run semantic-release
+        working-directory: .github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
+
+  # ---------------------------------------------------------------------------
+  # 2b. Build + push production images (CRITICAL vulns block)
+  # ---------------------------------------------------------------------------
+  build-production:
+    name: "Build & Push [production] (${{ matrix.service }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: production
+    strategy:
+      matrix:
+        service: [backend, frontend]
+      fail-fast: true
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Resolve version tag
+        id: ver
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate with AWS
+        uses: ./.github/actions/aws-auth
+        with:
+          role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag & push (CRITICAL blocks deploy)
+        uses: ./.github/actions/docker-build
+        with:
+          context: ./${{ matrix.service }}
+          dockerfile: ./${{ matrix.service }}/Dockerfile
+          image-name: mypythonproject1/${{ matrix.service }}
+          registry: ${{ steps.ecr-login.outputs.registry }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+            type=sha,prefix=,format=short
+          build-args: |
+            BUILD_ENV=production
+            GIT_SHA=${{ steps.ver.outputs.sha_short }}
+            VERSION=${{ steps.ver.outputs.tag }}
+          platforms: linux/amd64
+          scan: "true"
+          scan-severity: "CRITICAL"
+          scan-exit-code: "1"
+          cache-scope: ${{ matrix.service }}-production
+
+  # ---------------------------------------------------------------------------
+  # 2c. Update gitops repo — production values
+  # ---------------------------------------------------------------------------
+  update-gitops-production:
+    name: "Update GitOps Repo [production]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-production]
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/python-angular-project1-gitops
+          token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
+          path: gitops
+
+      - name: Resolve version tag
+        id: ver
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Patch production values — backend
+        run: |
+          docker run --rm -v "$PWD/gitops:/gitops" \
+            mikefarah/yq:4 \
+            e '.backend.image.tag = "${{ steps.ver.outputs.tag }}"' \
+            -i /gitops/environments/production/values.yaml
+
+      - name: Patch production values — frontend
+        run: |
+          docker run --rm -v "$PWD/gitops:/gitops" \
+            mikefarah/yq:4 \
+            e '.frontend.image.tag = "${{ steps.ver.outputs.tag }}"' \
+            -i /gitops/environments/production/values.yaml
+
+      - name: Commit & push to gitops repo
+        run: |
+          cd gitops
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add environments/production/values.yaml
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "chore(deploy): production image tag ${{ steps.ver.outputs.tag }} [skip ci]"
+          git push origin main
+
+  # ---------------------------------------------------------------------------
+  # 2d. ArgoCD sync + health poll (production)
+  # ---------------------------------------------------------------------------
+  argocd-sync-production:
+    name: "ArgoCD Sync [production]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [update-gitops-production]
+    environment: production
+    steps:
+      - name: Poll ArgoCD application health
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_TOKEN:  ${{ secrets.ARGOCD_TOKEN }}
+        run: |
+          APP="mypythonproject1-production"
+          MAX=40
+          SLEEP=30
+
+          for i in $(seq 1 $MAX); do
+            RESP=$(curl -sf \
+              -H "Authorization: Bearer $ARGOCD_TOKEN" \
+              "https://${ARGOCD_SERVER}/api/v1/applications/${APP}" || true)
+
+            HEALTH=$(echo "$RESP" | jq -r '.status.health.status // "Unknown"')
+            SYNC=$(echo   "$RESP" | jq -r '.status.sync.status   // "Unknown"')
+            echo "[$i/$MAX] health=$HEALTH  sync=$SYNC"
+
+            if [[ "$HEALTH" == "Healthy" && "$SYNC" == "Synced" ]]; then
+              echo "✅ ArgoCD: $APP is Healthy and Synced"
+              exit 0
+            fi
+
+            if [[ "$HEALTH" == "Degraded" ]]; then
+              echo "❌ ArgoCD: $APP health is Degraded — failing fast"
+              exit 1
+            fi
+
+            sleep $SLEEP
+          done
+
+          echo "❌ Timeout: $APP did not become Healthy+Synced within $((MAX * SLEEP / 60)) min"
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # 2e. Smoke test (production)
+  # ---------------------------------------------------------------------------
+  smoke-test-production:
+    name: "Smoke Test [production]"
+    needs: [argocd-sync-production]
+    uses: ./.github/workflows/_smoke-test.yml
+    with:
+      environment: production
+      app-url: ${{ vars.APP_URL }}
+      warmup-seconds: 20
+      deploy-version: ${{ github.ref_name }}
+      deploy-sha: ${{ github.sha }}
+    secrets: inherit

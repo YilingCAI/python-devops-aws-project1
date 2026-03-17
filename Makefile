@@ -37,14 +37,14 @@ NC := \033[0m # No Color
 
 ENV_FILE := deploy/.env
 INFRA_ROOT ?= ../mypythonproject1-infra
-DEV_TFVARS_FILE := $(INFRA_ROOT)/envs/dev.tfvars
+DEV_TFVARS_FILE := $(INFRA_ROOT)/environments/dev/terraform.tfvars
 
 -include $(ENV_FILE)
 
 # Prefer tfvars as source of truth for infra variables.
 TFVARS_ENV := $(shell awk -F'=' '/^environment[[:space:]]*=/{gsub(/["[:space:]]/,"",$$2); print $$2; exit}' $(DEV_TFVARS_FILE) 2>/dev/null)
 ENV ?= $(or $(TFVARS_ENV),dev)
-TFVARS_FILE = $(INFRA_ROOT)/envs/$(ENV).tfvars
+TFVARS_FILE = $(INFRA_ROOT)/environments/$(ENV)/terraform.tfvars
 
 TFVARS_PROJECT_NAME := $(shell awk -F'=' '/^project_name[[:space:]]*=/{gsub(/["[:space:]]/,"",$$2); print $$2; exit}' $(TFVARS_FILE) 2>/dev/null || awk -F'=' '/^project_name[[:space:]]*=/{gsub(/["[:space:]]/,"",$$2); print $$2; exit}' $(DEV_TFVARS_FILE) 2>/dev/null)
 TFVARS_AWS_REGION := $(shell awk -F'=' '/^aws_region[[:space:]]*=/{gsub(/["[:space:]]/,"",$$2); print $$2; exit}' $(TFVARS_FILE) 2>/dev/null || awk -F'=' '/^aws_region[[:space:]]*=/{gsub(/["[:space:]]/,"",$$2); print $$2; exit}' $(DEV_TFVARS_FILE) 2>/dev/null)
@@ -102,12 +102,6 @@ help:
 	@echo "$(GREEN)⚙️  SETUP$(NC)"
 	@echo "  $(YELLOW)make bootstrap$(NC)            - Terraform bootstrap (ECR, IAM, S3, optional DynamoDB lock table)"
 	@echo "  $(YELLOW)make setup-env$(NC)            - Export env vars for Terraform/deploy (ENV=staging|prod|dev)"
-	@echo ""
-	@echo "$(GREEN)🏗️  TERRAFORM$(NC)"
-	@echo "  $(YELLOW)make tf-validate$(NC)          - Validate Terraform"
-	@echo "  $(YELLOW)make tf-plan$(NC)              - Plan infrastructure (ENV=dev|staging|prod)"
-	@echo "  $(YELLOW)make tf-apply$(NC)             - Apply infrastructure (ENV=dev|staging|prod)"
-	@echo "  $(YELLOW)make tf-destroy$(NC)           - Destroy infrastructure (ENV=dev|staging|prod)"
 	@echo ""
 	@echo "$(GREEN)🐳 DOCKER BUILD & PUSH$(NC)"
 	@echo "  $(YELLOW)make docker-build$(NC)         - Build Docker images (ENV=staging|prod)"
@@ -269,37 +263,6 @@ frontend-build:
 	cd frontend && npm run build
 	@echo "$(GREEN)✅ Frontend build complete!$(NC)"
 
-# ============================================================================
-# ONE-TIME BOOTSTRAP & ENV SETUP
-# ============================================================================
-
-bootstrap:
-	@echo "$(GREEN)🚀 Bootstrapping AWS infrastructure (one-time setup)...$(NC)"
-	@bash scripts/bootstrap.sh
-
-setup-env:
-	@echo "$(GREEN)📝 Setting up environment for ENV=$(ENV)...$(NC)"
-	@ENV=$(ENV) AWS_REGION=$(AWS_REGION) TERRAFORM_STATE_BUCKET=$(TERRAFORM_STATE_BUCKET) TERRAFORM_LOCK_TABLE=$(TERRAFORM_LOCK_TABLE) bash scripts/setup-env.sh
-
-# ============================================================================
-# TERRAFORM OPERATIONS
-# ============================================================================
-
-tf-validate:
-	@echo "$(GREEN)📋 Validating Terraform...$(NC)"
-	@TF_ROOT=$(INFRA_ROOT) bash scripts/terraform-validate.sh
-
-tf-plan:
-	@echo "$(GREEN)📋 Planning Terraform for ENV=$(ENV)...$(NC)"
-	@ENV=$(ENV) TF_ROOT=$(INFRA_ROOT) AWS_REGION=$(AWS_REGION) TERRAFORM_STATE_BUCKET=$(TERRAFORM_STATE_BUCKET) TERRAFORM_LOCK_TABLE=$(TERRAFORM_LOCK_TABLE) bash scripts/terraform-plan.sh
-
-tf-apply:
-	@echo "$(GREEN)🚀 Applying Terraform for ENV=$(ENV)...$(NC)"
-	@ENV=$(ENV) TF_ROOT=$(INFRA_ROOT) AWS_REGION=$(AWS_REGION) TERRAFORM_STATE_BUCKET=$(TERRAFORM_STATE_BUCKET) TERRAFORM_LOCK_TABLE=$(TERRAFORM_LOCK_TABLE) bash scripts/terraform-apply.sh
-
-tf-destroy:
-	@echo "$(RED)⚠️  Destroying Terraform infrastructure for ENV=$(ENV)...$(NC)"
-	@ENV=$(ENV) TF_ROOT=$(INFRA_ROOT) AWS_REGION=$(AWS_REGION) TERRAFORM_STATE_BUCKET=$(TERRAFORM_STATE_BUCKET) TERRAFORM_LOCK_TABLE=$(TERRAFORM_LOCK_TABLE) bash scripts/terraform-destroy.sh
 
 # ============================================================================
 # DOCKER BUILD & PUSH
@@ -322,49 +285,6 @@ docker-push:
 	docker push $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/mypythonproject1/backend:$(ENV)
 	docker push $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com/mypythonproject1/frontend:$(ENV)
 	@echo "$(GREEN)✅ Images pushed to ECR$(NC)"
-
-# ============================================================================
-# ECS DEPLOYMENT
-# ============================================================================
-
-ecs-deploy:
-	@if [ -z "$(ENV)" ] || [ -z "$(IMAGE_TAG)" ]; then \
-		echo "$(RED)❌ Missing parameters. Usage: make ecs-deploy ENV=staging IMAGE_TAG=sha-abc123$(NC)"; exit 1; fi
-	@echo "$(GREEN)🚀 Deploying to ECS (cluster=$(ECS_CLUSTER), ENV=$(ENV), IMAGE_TAG=$(IMAGE_TAG))...$(NC)"
-	aws ecs update-service \
-	  --cluster  $(ECS_CLUSTER) \
-	  --service  $(ECS_SERVICE_BACKEND) \
-	  --force-new-deployment \
-	  --region   $(AWS_REGION)
-	aws ecs update-service \
-	  --cluster  $(ECS_CLUSTER) \
-	  --service  $(ECS_SERVICE_FRONTEND) \
-	  --force-new-deployment \
-	  --region   $(AWS_REGION)
-	@echo "$(GREEN)✅ ECS deployment triggered (run 'make setup-env ENV=$(ENV)' to verify cluster/service names)$(NC)"
-
-# ============================================================================
-# FULL DEPLOYMENT ORCHESTRATION
-# ============================================================================
-
-deploy:
-	@if [ -z "$(ENV)" ] || [ -z "$(IMAGE_TAG)" ]; then \
-		echo "$(RED)❌ Missing parameters. Usage: make deploy ENV=staging IMAGE_TAG=sha-abc123$(NC)"; exit 1; fi
-	@echo "$(GREEN)🚀 Full deployment starting (ENV=$(ENV), IMAGE_TAG=$(IMAGE_TAG))...$(NC)"
-	@$(MAKE) docker-build ENV=$(ENV)
-	@$(MAKE) docker-push ENV=$(ENV)
-	@$(MAKE) ecs-deploy ENV=$(ENV) IMAGE_TAG=$(IMAGE_TAG)
-	@echo "$(GREEN)✅ Deployment complete!$(NC)"
-
-deploy-staging:
-	@if [ -z "$(IMAGE_TAG)" ]; then echo "$(RED)❌ IMAGE_TAG not set. Usage: make deploy-staging IMAGE_TAG=...$(NC)"; exit 1; fi
-	@echo "$(GREEN)🚀 Deploying to STAGING (ENV=staging, IMAGE_TAG=$(IMAGE_TAG))...$(NC)"
-	@$(MAKE) deploy ENV=staging IMAGE_TAG=$(IMAGE_TAG)
-
-deploy-prod:
-	@if [ -z "$(IMAGE_TAG)" ]; then echo "$(RED)❌ IMAGE_TAG not set. Usage: make deploy-prod IMAGE_TAG=...$(NC)"; exit 1; fi
-	@echo "$(RED)🚀 Deploying to PRODUCTION (ENV=prod, IMAGE_TAG=$(IMAGE_TAG))...$(NC)"
-	@$(MAKE) deploy ENV=prod IMAGE_TAG=$(IMAGE_TAG)
 
 # ============================================================================
 # CLEANUP

@@ -8,10 +8,10 @@
 #   • Dependency vulnerability audit (Snyk)
 #   • Secret scanning (GitGuardian)
 #   • Filesystem vulnerability scan (Trivy)
-#   • Terraform fmt + validate + plan  ← plan ONLY, never apply
 #   • quality-gate job required by branch protection rules
 #
-# NO deployment logic lives here.
+# NO deployment and NO infrastructure logic lives here.
+# Infrastructure is managed in a separate repo (mypythonproject1-infra or -infra2).
 #
 # Triggers:
 #   • pull_request → main, develop
@@ -63,7 +63,7 @@ jobs:
 
             - uses: actions/setup-node@v4
               with:
-                  node-version: "20"
+                  node-version: "22"
                   cache: "npm"
 
             - name: Install commitlint
@@ -232,7 +232,7 @@ jobs:
 
             - uses: actions/setup-node@v4
               with:
-                  node-version: "20"
+                  node-version: "22"
                   cache: "npm"
                   cache-dependency-path: frontend/package-lock.json
 
@@ -335,85 +335,7 @@ jobs:
               continue-on-error: true
 
     # =========================================================================
-    # 7. TERRAFORM PLAN  ← PR only, NEVER applies
-    # =========================================================================
-    terraform-plan:
-        name: Terraform Plan (${{ matrix.environment }})
-        runs-on: ubuntu-latest
-        timeout-minutes: 15
-        needs: [changes]
-        if: |
-          needs.changes.outputs.ci == 'true' &&
-            github.event_name == 'pull_request'
-        strategy:
-            matrix:
-                environment: [staging, prod]
-            max-parallel: 1
-            fail-fast: false
-        permissions:
-            contents: read
-            pull-requests: write
-            id-token: write
-        steps:
-            - uses: actions/checkout@v4
-
-            - name: Checkout infra repository
-              uses: actions/checkout@v4
-              with:
-                  repository: ${{ github.repository_owner }}/mypythonproject1-infra
-                  path: mypythonproject1-infra
-
-            - name: Load CI environment
-              run: |
-                  grep -v '^\s*#' config/.env.test | grep -v '^\s*$' >> $GITHUB_ENV
-
-            - uses: hashicorp/setup-terraform@v3
-              with:
-                  terraform_version: ${{ env.TF_VERSION }}
-
-            - name: Configure AWS credentials
-              uses: aws-actions/configure-aws-credentials@v4
-              with:
-                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-                  aws-region: ${{ env.AWS_REGION }}
-
-            - name: Terraform fmt check
-              working-directory: mypythonproject1-infra
-              run: terraform fmt -check -recursive
-
-            - name: Terraform init (no remote state — validation only)
-              working-directory: mypythonproject1-infra
-              run: terraform init -backend=false
-
-            - name: Terraform validate
-              working-directory: mypythonproject1-infra
-              run: terraform validate
-
-            - name: Terraform plan
-              id: plan
-              working-directory: mypythonproject1-infra
-              env:
-                  TF_VAR_environment: ${{ matrix.environment }}
-                  TF_VAR_aws_region: ${{ env.AWS_REGION }}
-              run: |
-                  terraform plan \
-                    -var-file="envs/${{ matrix.environment }}.tfvars" \
-                    -no-color 2>&1 | tee plan-output.txt
-
-            - name: Post plan to PR
-              uses: actions/github-script@v7
-              with:
-                  script: |
-                      const fs   = require('fs');
-                      const plan = fs.readFileSync('mypythonproject1-infra/plan-output.txt', 'utf8').substring(0, 65000);
-                      github.rest.issues.createComment({
-                        issue_number: context.issue.number,
-                        owner: context.repo.owner, repo: context.repo.repo,
-                        body: `## 🔍 Terraform Plan — \`${{ matrix.environment }}\`\n\`\`\`hcl\n${plan}\n\`\`\``
-                      });
-
-    # =========================================================================
-    # 8. QUALITY GATE — single status required by branch protection
+    # 7. QUALITY GATE — single status required by branch protection
     # =========================================================================
     quality-gate:
         name: Quality Gate
@@ -426,30 +348,22 @@ jobs:
             - frontend-ci
             - security-scan
             - dependency-audit
-            - terraform-plan
         steps:
             - name: Evaluate gate
               run: |
                   CL="${{ needs.commitlint.result }}"
                   BE="${{ needs.backend-ci.result }}"
                   FE="${{ needs.frontend-ci.result }}"
-                  TF="${{ needs.terraform-plan.result }}"
 
                   echo "commitlint:  $CL"
                   echo "backend-ci:  $BE"
                   echo "frontend-ci: $FE"
-                  echo "tf-plan:     $TF"
 
-                  # Hard failures — must pass
                   for r in "$BE" "$FE"; do
                     [[ "$r" == "failure" ]] && { echo "❌ Required job failed"; exit 1; }
                   done
 
-                  # Commitlint fails only on PRs (skipped on push)
                   [[ "$CL" == "failure" ]] && { echo "❌ Commitlint failed"; exit 1; }
-
-                  # Terraform plan failure blocks PRs when terraform-plan runs
-                  [[ "$TF" == "failure" ]] && { echo "❌ Terraform plan failed"; exit 1; }
 
                   echo "✅ All gates passed"
 
@@ -466,7 +380,6 @@ jobs:
                     echo "| Frontend CI      | $(icon ${{ needs.frontend-ci.result }}) \`${{ needs.frontend-ci.result }}\` |"
                     echo "| Security Scan    | $(icon ${{ needs.security-scan.result }}) \`${{ needs.security-scan.result }}\` |"
                     echo "| Dependency Audit | $(icon ${{ needs.dependency-audit.result }}) \`${{ needs.dependency-audit.result }}\` |"
-                    echo "| Terraform Plan   | $(icon ${{ needs.terraform-plan.result }}) \`${{ needs.terraform-plan.result }}\` |"
                     echo ""
                     echo "_\`${{ github.event_name }}\` on \`${{ github.ref_name }}\` — \`${{ github.sha }}\`_"
                   } >> $GITHUB_STEP_SUMMARY
