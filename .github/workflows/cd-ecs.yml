@@ -127,7 +127,7 @@ jobs:
     environment: staging
     steps:
       - name: Dispatch terraform-apply to infra repo
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
           script: |
@@ -318,7 +318,7 @@ jobs:
     environment: production
     steps:
       - name: Dispatch terraform-apply to infra repo
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
           script: |
