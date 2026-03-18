@@ -167,13 +167,47 @@ jobs:
           git push origin main
 
   # ---------------------------------------------------------------------------
-  # 0c. Wait for ArgoCD to sync dev and report health
+  # 0c. Upsert Kubernetes secrets from GitHub Secrets (idempotent)
+  # ---------------------------------------------------------------------------
+  sync-k8s-secrets-dev:
+    name: "Sync K8s Secrets [dev]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [update-gitops-dev]
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate with AWS
+        uses: ./.github/actions/aws-auth
+        with:
+          role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name mypythonproject1-dev-eks \
+            --region ${{ secrets.AWS_REGION }}
+
+      - name: Upsert DB credentials secret
+        run: |
+          kubectl create secret generic mypythonproject1-db-secret \
+            --namespace mypythonproject1-dev \
+            --from-literal=password=${{ secrets.DB_PASSWORD }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+  # ---------------------------------------------------------------------------
+  # 0d. Wait for ArgoCD to sync dev and report health
   # ---------------------------------------------------------------------------
   argocd-sync-dev:
     name: "ArgoCD Sync [dev]"
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [update-gitops-dev]
+    needs: [sync-k8s-secrets-dev]
     environment: dev
     steps:
       - name: Poll ArgoCD application health
