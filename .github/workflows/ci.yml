@@ -115,35 +115,32 @@ jobs:
             needs.changes.outputs.backend == 'true' ||
             needs.changes.outputs.ci == 'true'      ||
             github.event_name == 'workflow_dispatch'
-        # Job-level env is evaluated before service containers start,
-        # so these vars are available to the postgres service block below.
-        # Using hardcoded CI-only test credentials that match the defaults in
-        # tests/fixtures/settings.py — no secrets required for test DB access.
+        # Hardcoded CI-only test credentials matching config/.env.test.
+        # Service containers are provisioned before job steps run, so secrets/vars
+        # context is not available here — literals are required.
         services:
             postgres:
                 image: postgres:16-alpine
                 env:
                     POSTGRES_USER:     postgres
                     POSTGRES_PASSWORD: postgres
-                    POSTGRES_DB:       test_myproject
+                    POSTGRES_DB:       myproject_test
                 options: >-
                     --health-cmd pg_isready
                     --health-interval 10s
                     --health-timeout 5s
                     --health-retries 5
                 ports:
-                  - "${{ vars.POSTGRES_PORT }}:5432"
+                  - "5432:5432"
                     
 
         steps:
             - uses: actions/checkout@v4
 
             - name: Load test environment
-              # Non-secret app vars (DATABASE_*, JWT_ALGORITHM, etc.) and
-              # CI tooling vars (TF_VERSION, REGISTRY) from config/.env.test
+              # Non-secret app vars (DATABASE_*, JWT_ALGORITHM, etc.) from config/.env.test
               run: |
                   grep -v '^\s*#' config/.env.test | grep -v '^\s*$' >> $GITHUB_ENV
-                  echo "POSTGRES_PORT=${{ vars.POSTGRES_PORT }}" >> $GITHUB_ENV
 
             - uses: actions/setup-python@v5
               with:
