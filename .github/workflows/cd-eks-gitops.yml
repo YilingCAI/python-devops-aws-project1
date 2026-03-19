@@ -38,7 +38,7 @@ name: "CD — EKS/ArgoCD GitOps"
 on:
   workflow_run:
     workflows: ["CI"]
-    branches: [develop]
+    branches: [developer]
     types: [completed]
   push:
     tags:
