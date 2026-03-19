@@ -1,0 +1,96 @@
+###############################################################################
+# Reusable workflow — Build & push Docker images to ECR
+#
+# Called by cd-eks-gitops.yml for dev / staging / production.
+# The calling job sets `environment:` so AWS_ROLE_TO_ASSUME resolves to the
+# correct environment-scoped secret automatically via `secrets: inherit`.
+###############################################################################
+name: "Build & Push to ECR"
+
+on:
+  workflow_call:
+    inputs:
+      git-ref:
+        description: "Git ref or full SHA to checkout"
+        required: true
+        type: string
+      env-name:
+        description: "Environment name for Docker layer cache scope (dev/staging/production)"
+        required: true
+        type: string
+      tags:
+        description: "docker/metadata-action tags spec (multiline)"
+        required: true
+        type: string
+      build-args:
+        description: "Docker build-args (multiline KEY=VALUE)"
+        required: true
+        type: string
+      scan-severity:
+        description: "Trivy severities that trigger a finding"
+        required: false
+        type: string
+        default: "CRITICAL"
+      scan-exit-code:
+        description: "Exit code when a scan finding is detected (0=warn, 1=block)"
+        required: false
+        type: string
+        default: "0"
+    outputs:
+      sha-short:
+        description: "7-char commit SHA used for image tagging"
+        value: ${{ jobs.build.outputs.sha-short }}
+    secrets:
+      AWS_ROLE_TO_ASSUME:
+        required: true
+      AWS_REGION:
+        required: true
+
+jobs:
+  build:
+    name: "(${{ matrix.service }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        service: [backend, frontend]
+      fail-fast: true
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      # Both matrix legs write the same SHA; last-write-wins is safe here.
+      sha-short: ${{ steps.meta.outputs.sha-short }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git-ref }}
+
+      - name: Compute short SHA
+        id: meta
+        run: echo "sha-short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate with AWS
+        uses: ./.github/actions/aws-auth
+        with:
+          role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag & push
+        uses: ./.github/actions/docker-build
+        with:
+          context: ./${{ matrix.service }}
+          dockerfile: ./${{ matrix.service }}/Dockerfile
+          image-name: mypythonproject1/${{ matrix.service }}
+          registry: ${{ steps.ecr-login.outputs.registry }}
+          tags: ${{ inputs.tags }}
+          build-args: ${{ inputs.build-args }}
+          platforms: linux/amd64
+          scan: "true"
+          scan-severity: ${{ inputs.scan-severity }}
+          scan-exit-code: ${{ inputs.scan-exit-code }}
+          cache-scope: ${{ matrix.service }}-${{ inputs.env-name }}
