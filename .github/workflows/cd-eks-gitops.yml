@@ -82,7 +82,7 @@ jobs:
     uses: ./.github/workflows/_build-and-push.yml
     with:
       git-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      env-name: dev
+      env-name: ${{ inputs.environment }}
       tags: |
         type=raw,value=dev
         type=sha,prefix=dev-,format=short
@@ -101,7 +101,7 @@ jobs:
     needs: [build-dev]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: dev
+    environment: ${{ inputs.environment }}
     permissions:
       contents: read
       id-token: write
@@ -110,7 +110,7 @@ jobs:
 
       - uses: ./.github/actions/deploy-env
         with:
-          gitops-env: dev
+          gitops-env: ${ inputs.environment }
           image-tag: ${{ format('dev-{0}', needs.build-dev.outputs.sha-short) }}
           gitops-repo: ${{ github.repository_owner }}/mypythonproject1-gitops
           eks-cluster-name: mypythonproject1-dev-eks
@@ -151,7 +151,7 @@ jobs:
     uses: ./.github/workflows/_build-and-push.yml
     with:
       git-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      env-name: staging
+      env-name: ${{ inputs.environment }}
       tags: |
         type=raw,value=staging
         type=sha,prefix=staging-,format=short
@@ -170,7 +170,7 @@ jobs:
     needs: [build-staging]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: staging
+    environment: ${{ inputs.environment }}
     permissions:
       contents: read
       id-token: write
@@ -179,7 +179,7 @@ jobs:
 
       - uses: ./.github/actions/deploy-env
         with:
-          gitops-env: staging
+          gitops-env: ${ inputs.environment }
           image-tag: ${{ format('staging-{0}', needs.build-staging.outputs.sha-short) }}
           gitops-repo: ${{ github.repository_owner }}/mypythonproject1-gitops
           eks-cluster-name: mypythonproject1-staging-eks
@@ -255,7 +255,7 @@ jobs:
     uses: ./.github/workflows/_build-and-push.yml
     with:
       git-ref: ${{ github.ref }}
-      env-name: prod
+      env-name: ${{ inputs.environment }}
       tags: |
         type=semver,pattern={{version}}
         type=semver,pattern={{major}}.{{minor}}
@@ -277,7 +277,7 @@ jobs:
     needs: [build-production]
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    environment: prod
+    environment: ${{ inputs.environment }}
     permissions:
       contents: read
       id-token: write
@@ -286,7 +286,7 @@ jobs:
 
       - uses: ./.github/actions/deploy-env
         with:
-          gitops-env: prod
+          gitops-env: ${{ inputs.environment }}
           image-tag: ${{ github.ref_name }}
           gitops-repo: ${{ github.repository_owner }}/mypythonproject1-gitops
           eks-cluster-name: mypythonproject1-prod-eks
