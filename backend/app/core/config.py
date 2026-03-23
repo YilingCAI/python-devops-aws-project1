@@ -155,7 +155,7 @@ class Settings(BaseSettings):
             f"postgresql+psycopg2://{self.DATABASE_USER}:"
             f"{self.DATABASE_PASSWORD}@{self.DATABASE_HOST}:"
             f"{self.DATABASE_PORT}/{self.DATABASE_NAME}"
-            f"?connect_timeout=5"
+            f"?connect_timeout=5&sslmode=require"
         )
 
     @property
