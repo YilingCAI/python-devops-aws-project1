@@ -110,7 +110,7 @@ jobs:
 
       - uses: ./.github/actions/deploy-env
         with:
-          gitops-env: ${ inputs.environment }
+          gitops-env: default
           image-tag: ${{ format('dev-{0}', needs.build-dev.outputs.sha-short) }}
           gitops-repo: ${{ github.repository_owner }}/mypythonproject1-gitops
           eks-cluster-name: mypythonproject1-dev-eks
