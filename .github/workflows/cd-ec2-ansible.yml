@@ -1,20 +1,15 @@
 ###############################################################################
-# CD — Option 3: EC2 / Ansible Deployment
+# CD — EC2 / Ansible Deployment
 ###############################################################################
 #
 # Repository separation:
-#   mypythonproject1         ← app code + release orchestration (YOU ARE HERE)
-#   mypythonproject1-infra3  ← EC2 Terraform + Ansible deployment execution
+#   mypythonproject1         <- app code + release orchestration
+#   mypythonproject1-infra3  <- EC2 Terraform + Ansible deployment execution
 #
-# Pipeline:
-#   CI passes on develop  →  build + push images (staging tag)  →  dispatch
-#                              to infra3 ansible workflow       →  verify
-#
-#   Tag v* is pushed      →  build + push images (semver + latest)  →  dispatch
-#                              to infra3 ansible workflow           →  verify
-#
-#   Manual rollback       →  dispatch rollback to infra3 ansible workflow
-#                              and wait for completion
+# Unified workflow:
+#   - Manual (workflow_dispatch): dev/staging deploy or rollback
+#   - Automatic staging: CI success on develop
+#   - Automatic production: tag push v*
 ###############################################################################
 name: "CD — EC2/Ansible"
 
@@ -32,7 +27,7 @@ on:
         description: "Target environment"
         required: true
         type: choice
-        options: [dev, staging, prod]
+        options: [dev, staging]
         default: staging
       operation:
         description: "Operation to run"
@@ -41,7 +36,7 @@ on:
         options: [deploy, rollback]
         default: deploy
       rollback_tag:
-        description: "Required when operation=rollback (for example: staging-a1b2c3d or v1.2.3)"
+        description: "Required when operation=rollback (for example: dev-a1b2c3d or staging-a1b2c3d)"
         required: false
         type: string
 
@@ -51,95 +46,64 @@ permissions:
 concurrency:
   group: >-
     ${{ startsWith(github.ref, 'refs/tags/v') && 'cd-ec2-production'
-     || github.event_name == 'workflow_dispatch' && format('cd-ec2-{0}-{1}', inputs.environment, inputs.operation)
-     || 'cd-ec2-staging' }}
+     || github.event_name == 'workflow_run' && 'cd-ec2-staging-auto'
+     || format('cd-ec2-manual-{0}-{1}', inputs.environment, inputs.operation) }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 jobs:
-  build-dev:
-    name: "Build & Push [dev] (${{ matrix.service }})"
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    if: >
-      github.event_name == 'workflow_dispatch'
-      && inputs.environment == 'dev'
-      && inputs.operation == 'deploy'
-    environment: dev
-    strategy:
-      matrix:
-        service: [backend, frontend]
-      fail-fast: true
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
+  manual-build:
+    name: "Build & Push [manual:${{ inputs.environment }}]"
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'
+    uses: ./.github/workflows/_build-and-push.yml
+    with:
+      git-ref: ${{ github.sha }}
+      env-name: ${{ inputs.environment }}
+      github-environment: ${{ inputs.environment }}
+      tags: |
+        type=raw,value=${{ inputs.environment }}
+        type=sha,prefix=${{ inputs.environment }}-,format=short
+      build-args: |
+        BUILD_ENV=${{ inputs.environment }}
+        GIT_SHA=${{ github.sha }}
+      scan-severity: CRITICAL,HIGH
+      scan-exit-code: "0"
+    secrets: inherit
 
-      - name: Authenticate with AWS
-        uses: ./.github/actions/aws-auth
-        with:
-          role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag & push
-        uses: ./.github/actions/docker-build
-        with:
-          context: ./${{ matrix.service }}
-          dockerfile: ./${{ matrix.service }}/Dockerfile
-          image-name: mypythonproject1/${{ matrix.service }}
-          registry: ${{ steps.ecr-login.outputs.registry }}
-          tags: |
-            type=raw,value=dev
-            type=sha,prefix=dev-,format=short
-          build-args: |
-            BUILD_ENV=dev
-            GIT_SHA=${{ github.sha }}
-          platforms: linux/amd64
-          scan: "true"
-          scan-severity: "CRITICAL,HIGH"
-          scan-exit-code: "0"
-          cache-scope: ${{ matrix.service }}-dev
-
-  ec2-deploy-dev:
-    name: "EC2 Deploy [dev] via Ansible"
+  manual-ec2-deploy:
+    name: "EC2 Deploy [manual:${{ inputs.environment }}] via Ansible"
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [build-dev]
-    if: needs.build-dev.result == 'success'
-    environment: dev
+    needs: [manual-build]
+    if: needs.manual-build.result == 'success'
+    environment: ${{ inputs.environment }}
     steps:
       - name: Dispatch ansible-ec2-deploy to infra3 repo
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
           script: |
-            const imageTag = `dev-${context.sha.substring(0, 7)}`;
+            const env = '${{ inputs.environment }}';
+            const imageTag = `${env}-${context.sha.substring(0, 7)}`;
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: 'mypythonproject1-infra3',
               workflow_id: 'ansible-ec2-deploy.yml',
               ref: 'main',
               inputs: {
-                environment: 'dev',
+                environment: env,
                 operation: 'deploy',
                 image_tag: imageTag,
               },
             });
-            core.notice(`Dispatched ansible-ec2-deploy on mypythonproject1-infra3 (dev, tag=${imageTag})`);
+            core.notice(`Dispatched ansible-ec2-deploy on mypythonproject1-infra3 (${env}, tag=${imageTag})`);
 
-  ec2-verify-dev:
-    name: "Verify EC2 Deploy [dev]"
+  manual-ec2-verify:
+    name: "Verify EC2 Deploy [manual:${{ inputs.environment }}]"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [ec2-deploy-dev]
-    if: needs.ec2-deploy-dev.result == 'success'
-    environment: dev
+    needs: [manual-ec2-deploy]
+    if: needs.manual-ec2-deploy.result == 'success'
+    environment: ${{ inputs.environment }}
     steps:
       - name: Wait for infra3 ansible workflow result
         uses: actions/github-script@v7
@@ -148,8 +112,10 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = 'mypythonproject1-infra3';
+            const env = '${{ inputs.environment }}';
             const expectedTag = `${context.sha.substring(0, 7)}`;
-            const tagNeedle = `tag=dev-${expectedTag}`;
+            const tagNeedle = `tag=${env}-${expectedTag}`;
+            const envNeedle = `[${env}]`;
             const deadline = Date.now() + 30 * 60 * 1000;
 
             while (Date.now() < deadline) {
@@ -161,9 +127,9 @@ jobs:
                 per_page: 20,
               });
 
-              const matchedRun = resp.data.workflow_runs.find((r) => {
-                const title = (r.display_title || '').toLowerCase();
-                return title.includes('[dev]') && title.includes(tagNeedle.toLowerCase());
+              const matchedRun = resp.data.workflow_runs.find((run) => {
+                const title = (run.display_title || '').toLowerCase();
+                return title.includes(envNeedle.toLowerCase()) && title.includes(tagNeedle.toLowerCase());
               });
 
               if (!matchedRun || matchedRun.status !== 'completed') {
@@ -180,66 +146,32 @@ jobs:
               return;
             }
 
-            core.setFailed('Timed out waiting for infra3 ansible dev deployment run to complete');
+            core.setFailed('Timed out waiting for infra3 ansible manual deployment run to complete');
 
-  build-staging:
-    name: "Build & Push [staging] (${{ matrix.service }})"
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    if: >
-      (github.event_name == 'workflow_run'
-        && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'workflow_dispatch'
-        && inputs.environment == 'staging'
-        && inputs.operation == 'deploy')
-    environment: staging
-    strategy:
-      matrix:
-        service: [backend, frontend]
-      fail-fast: true
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+  auto-build-staging:
+    name: "Auto Build & Push [staging]"
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    uses: ./.github/workflows/_build-and-push.yml
+    with:
+      git-ref: ${{ github.event.workflow_run.head_sha }}
+      env-name: staging
+      github-environment: staging
+      tags: |
+        type=raw,value=staging
+        type=sha,prefix=staging-,format=short
+      build-args: |
+        BUILD_ENV=staging
+        GIT_SHA=${{ github.event.workflow_run.head_sha }}
+      scan-severity: CRITICAL,HIGH
+      scan-exit-code: "0"
+    secrets: inherit
 
-      - name: Authenticate with AWS
-        uses: ./.github/actions/aws-auth
-        with:
-          role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag & push
-        uses: ./.github/actions/docker-build
-        with:
-          context: ./${{ matrix.service }}
-          dockerfile: ./${{ matrix.service }}/Dockerfile
-          image-name: mypythonproject1/${{ matrix.service }}
-          registry: ${{ steps.ecr-login.outputs.registry }}
-          tags: |
-            type=raw,value=staging
-            type=sha,prefix=staging-,format=short
-          build-args: |
-            BUILD_ENV=staging
-            GIT_SHA=${{ github.event.workflow_run.head_sha || github.sha }}
-          platforms: linux/amd64
-          scan: "true"
-          scan-severity: "CRITICAL,HIGH"
-          scan-exit-code: "0"
-          cache-scope: ${{ matrix.service }}-staging
-
-  ec2-deploy-staging:
-    name: "EC2 Deploy [staging] via Ansible"
+  auto-ec2-deploy-staging:
+    name: "Auto EC2 Deploy [staging] via Ansible"
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [build-staging]
-    if: needs.build-staging.result == 'success'
+    needs: [auto-build-staging]
+    if: needs.auto-build-staging.result == 'success'
     environment: staging
     steps:
       - name: Dispatch ansible-ec2-deploy to infra3 repo
@@ -247,7 +179,7 @@ jobs:
         with:
           github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
           script: |
-            const headSha = (context.payload.workflow_run && context.payload.workflow_run.head_sha) || context.sha;
+            const headSha = context.payload.workflow_run.head_sha;
             const imageTag = `staging-${headSha.substring(0, 7)}`;
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
@@ -262,12 +194,12 @@ jobs:
             });
             core.notice(`Dispatched ansible-ec2-deploy on mypythonproject1-infra3 (staging, tag=${imageTag})`);
 
-  ec2-verify-staging:
-    name: "Verify EC2 Deploy [staging]"
+  auto-ec2-verify-staging:
+    name: "Auto Verify EC2 Deploy [staging]"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [ec2-deploy-staging]
-    if: needs.ec2-deploy-staging.result == 'success'
+    needs: [auto-ec2-deploy-staging]
+    if: needs.auto-ec2-deploy-staging.result == 'success'
     environment: staging
     steps:
       - name: Wait for infra3 ansible workflow result
@@ -277,7 +209,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = 'mypythonproject1-infra3';
-            const expectedTag = `${((context.payload.workflow_run && context.payload.workflow_run.head_sha) || context.sha).substring(0, 7)}`;
+            const expectedTag = context.payload.workflow_run.head_sha.substring(0, 7);
             const tagNeedle = `tag=staging-${expectedTag}`;
             const deadline = Date.now() + 30 * 60 * 1000;
 
@@ -290,8 +222,8 @@ jobs:
                 per_page: 20,
               });
 
-              const matchedRun = resp.data.workflow_runs.find((r) => {
-                const title = (r.display_title || '').toLowerCase();
+              const matchedRun = resp.data.workflow_runs.find((run) => {
+                const title = (run.display_title || '').toLowerCase();
                 return title.includes('[staging]') && title.includes(tagNeedle.toLowerCase());
               });
 
@@ -311,69 +243,33 @@ jobs:
 
             core.setFailed('Timed out waiting for infra3 ansible staging deployment run to complete');
 
-  build-production:
-    name: "Build & Push [production] (${{ matrix.service }})"
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  auto-build-production:
+    name: "Auto Build & Push [production]"
     if: startsWith(github.ref, 'refs/tags/v')
-    environment: prod
-    strategy:
-      matrix:
-        service: [backend, frontend]
-      fail-fast: true
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref }}
+    uses: ./.github/workflows/_build-and-push.yml
+    with:
+      git-ref: ${{ github.ref }}
+      env-name: production
+      github-environment: prod
+      tags: |
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+        type=raw,value=latest
+        type=sha,prefix=,format=short
+      build-args: |
+        BUILD_ENV=production
+        GIT_SHA=${{ github.sha }}
+        VERSION=${{ github.ref_name }}
+      scan-severity: CRITICAL
+      scan-exit-code: "1"
+    secrets: inherit
 
-      - name: Resolve version tag
-        id: ver
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Authenticate with AWS
-        uses: ./.github/actions/aws-auth
-        with:
-          role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag & push (CRITICAL blocks deploy)
-        uses: ./.github/actions/docker-build
-        with:
-          context: ./${{ matrix.service }}
-          dockerfile: ./${{ matrix.service }}/Dockerfile
-          image-name: mypythonproject1/${{ matrix.service }}
-          registry: ${{ steps.ecr-login.outputs.registry }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-            type=sha,prefix=,format=short
-          build-args: |
-            BUILD_ENV=production
-            GIT_SHA=${{ steps.ver.outputs.sha_short }}
-            VERSION=${{ steps.ver.outputs.tag }}
-          platforms: linux/amd64
-          scan: "true"
-          scan-severity: "CRITICAL"
-          scan-exit-code: "1"
-          cache-scope: ${{ matrix.service }}-production
-
-  ec2-deploy-production:
-    name: "EC2 Deploy [production] via Ansible"
+  auto-ec2-deploy-production:
+    name: "Auto EC2 Deploy [production] via Ansible"
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [build-production]
-    if: needs.build-production.result == 'success'
+    needs: [auto-build-production]
+    if: needs.auto-build-production.result == 'success'
     environment: prod
     steps:
       - name: Dispatch ansible-ec2-deploy to infra3 repo
@@ -396,12 +292,12 @@ jobs:
             });
             core.notice(`Dispatched ansible-ec2-deploy on mypythonproject1-infra3 (prod, tag=${tag})`);
 
-  ec2-verify-production:
-    name: "Verify EC2 Deploy [production]"
+  auto-ec2-verify-production:
+    name: "Auto Verify EC2 Deploy [production]"
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: [ec2-deploy-production]
-    if: needs.ec2-deploy-production.result == 'success'
+    needs: [auto-ec2-deploy-production]
+    if: needs.auto-ec2-deploy-production.result == 'success'
     environment: prod
     steps:
       - name: Wait for infra3 ansible workflow result
@@ -424,8 +320,8 @@ jobs:
                 per_page: 20,
               });
 
-              const matchedRun = resp.data.workflow_runs.find((r) => {
-                const title = (r.display_title || '').toLowerCase();
+              const matchedRun = resp.data.workflow_runs.find((run) => {
+                const title = (run.display_title || '').toLowerCase();
                 return title.includes('[prod]') && title.includes(tagNeedle.toLowerCase());
               });
 
@@ -467,7 +363,6 @@ jobs:
           script: |
             const env = '${{ inputs.environment }}';
             const rollbackTag = '${{ inputs.rollback_tag }}';
-            const isProd = env === 'prod';
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: 'mypythonproject1-infra3',
@@ -477,7 +372,6 @@ jobs:
                 environment: env,
                 operation: 'rollback',
                 image_tag: rollbackTag,
-                production_confirmation: isProd ? 'APPROVE_PROD_DEPLOY' : '',
               },
             });
             core.notice(`Dispatched ansible rollback on mypythonproject1-infra3 (${env}, tag=${rollbackTag})`);
@@ -485,7 +379,7 @@ jobs:
   ec2-verify-rollback-manual:
     name: "Verify EC2 Rollback [manual]"
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     if: github.event_name == 'workflow_dispatch' && inputs.operation == 'rollback'
     needs: [ec2-rollback-manual]
     environment: ${{ inputs.environment }}
@@ -502,9 +396,7 @@ jobs:
             const envNeedle = `[${env}]`;
             const opNeedle = 'rollback';
             const tagNeedle = `tag=${rollbackTag}`;
-            const timeoutMs = env === 'prod' ? 45 * 60 * 1000 : 30 * 60 * 1000;
-            const pollMs = 20000;
-            const deadline = Date.now() + timeoutMs;
+            const deadline = Date.now() + 30 * 60 * 1000;
 
             while (Date.now() < deadline) {
               const resp = await github.rest.actions.listWorkflowRuns({
@@ -515,13 +407,13 @@ jobs:
                 per_page: 20,
               });
 
-              const matchedRun = resp.data.workflow_runs.find((r) => {
-                const title = (r.display_title || '').toLowerCase();
+              const matchedRun = resp.data.workflow_runs.find((run) => {
+                const title = (run.display_title || '').toLowerCase();
                 return title.includes(envNeedle.toLowerCase()) && title.includes(opNeedle) && title.includes(tagNeedle.toLowerCase());
               });
 
               if (!matchedRun || matchedRun.status !== 'completed') {
-                await new Promise((resolve) => setTimeout(resolve, pollMs));
+                await new Promise((resolve) => setTimeout(resolve, 20000));
                 continue;
               }
 

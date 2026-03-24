@@ -18,6 +18,11 @@ on:
         description: "Environment name for Docker layer cache scope (dev/staging/production)"
         required: true
         type: string
+      github-environment:
+        description: "Optional GitHub Environment name used for secrets/approvals"
+        required: false
+        type: string
+        default: ""
       tags:
         description: "docker/metadata-action tags spec (multiline)"
         required: true
@@ -40,17 +45,13 @@ on:
       sha-short:
         description: "7-char commit SHA used for image tagging"
         value: ${{ jobs.build.outputs.sha-short }}
-    secrets:
-      AWS_ROLE_TO_ASSUME:
-        required: true
-      AWS_REGION:
-        required: true
 
 jobs:
   build:
     name: "(${{ matrix.service }})"
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    environment: ${{ inputs.github-environment != '' && inputs.github-environment || inputs.env-name }}
     strategy:
       matrix:
         service: [backend, frontend]
