@@ -54,6 +54,9 @@ jobs:
   manual-build:
     name: "Build & Push [manual:${{ inputs.environment }}]"
     if: github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/_build-and-push.yml
     with:
       git-ref: ${{ github.sha }}
@@ -151,6 +154,9 @@ jobs:
   auto-build-staging:
     name: "Auto Build & Push [staging]"
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/_build-and-push.yml
     with:
       git-ref: ${{ github.event.workflow_run.head_sha }}
@@ -246,6 +252,9 @@ jobs:
   auto-build-production:
     name: "Auto Build & Push [production]"
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/_build-and-push.yml
     with:
       git-ref: ${{ github.ref }}
