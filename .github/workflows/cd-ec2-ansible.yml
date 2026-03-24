@@ -4,7 +4,7 @@
 #
 # Repository separation:
 #   mypythonproject1         <- app code + release orchestration
-#   mypythonproject1-infra3  <- EC2 Terraform + Ansible deployment execution
+#   python-angular-project1-infra3  <- EC2 Terraform + Ansible deployment execution
 #
 # Unified workflow:
 #   - Manual (workflow_dispatch): dev/staging deploy or rollback
@@ -89,7 +89,7 @@ jobs:
             const imageTag = `${env}-${context.sha.substring(0, 7)}`;
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
-              repo: 'mypythonproject1-infra3',
+              repo: 'python-angular-project1-infra3',
               workflow_id: 'ansible-ec2-deploy.yml',
               ref: 'main',
               inputs: {
@@ -98,7 +98,7 @@ jobs:
                 image_tag: imageTag,
               },
             });
-            core.notice(`Dispatched ansible-ec2-deploy on mypythonproject1-infra3 (${env}, tag=${imageTag})`);
+            core.notice(`Dispatched ansible-ec2-deploy on python-angular-project1-infra3 (${env}, tag=${imageTag})`);
 
   manual-ec2-verify:
     name: "Verify EC2 Deploy [manual:${{ inputs.environment }}]"
@@ -114,7 +114,7 @@ jobs:
           github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const owner = context.repo.owner;
-            const repo = 'mypythonproject1-infra3';
+            const repo = 'python-angular-project1-infra3';
             const env = '${{ inputs.environment }}';
             const expectedTag = `${context.sha.substring(0, 7)}`;
             const tagNeedle = `tag=${env}-${expectedTag}`;
@@ -189,7 +189,7 @@ jobs:
             const imageTag = `staging-${headSha.substring(0, 7)}`;
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
-              repo: 'mypythonproject1-infra3',
+              repo: 'python-angular-project1-infra3',
               workflow_id: 'ansible-ec2-deploy.yml',
               ref: 'main',
               inputs: {
@@ -198,7 +198,7 @@ jobs:
                 image_tag: imageTag,
               },
             });
-            core.notice(`Dispatched ansible-ec2-deploy on mypythonproject1-infra3 (staging, tag=${imageTag})`);
+            core.notice(`Dispatched ansible-ec2-deploy on python-angular-project1-infra3 (staging, tag=${imageTag})`);
 
   auto-ec2-verify-staging:
     name: "Auto Verify EC2 Deploy [staging]"
@@ -214,7 +214,7 @@ jobs:
           github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const owner = context.repo.owner;
-            const repo = 'mypythonproject1-infra3';
+            const repo = 'python-angular-project1-infra3';
             const expectedTag = context.payload.workflow_run.head_sha.substring(0, 7);
             const tagNeedle = `tag=staging-${expectedTag}`;
             const deadline = Date.now() + 30 * 60 * 1000;
@@ -289,7 +289,7 @@ jobs:
             const tag = context.ref.replace('refs/tags/', '');
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
-              repo: 'mypythonproject1-infra3',
+              repo: 'python-angular-project1-infra3',
               workflow_id: 'ansible-ec2-deploy.yml',
               ref: 'main',
               inputs: {
@@ -299,7 +299,7 @@ jobs:
                 production_confirmation: 'APPROVE_PROD_DEPLOY',
               },
             });
-            core.notice(`Dispatched ansible-ec2-deploy on mypythonproject1-infra3 (prod, tag=${tag})`);
+            core.notice(`Dispatched ansible-ec2-deploy on python-angular-project1-infra3 (prod, tag=${tag})`);
 
   auto-ec2-verify-production:
     name: "Auto Verify EC2 Deploy [production]"
@@ -315,7 +315,7 @@ jobs:
           github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const owner = context.repo.owner;
-            const repo = 'mypythonproject1-infra3';
+            const repo = 'python-angular-project1-infra3';
             const tag = context.ref.replace('refs/tags/', '');
             const tagNeedle = `tag=${tag}`;
             const deadline = Date.now() + 45 * 60 * 1000;
@@ -374,7 +374,7 @@ jobs:
             const rollbackTag = '${{ inputs.rollback_tag }}';
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
-              repo: 'mypythonproject1-infra3',
+              repo: 'python-angular-project1-infra3',
               workflow_id: 'ansible-ec2-deploy.yml',
               ref: 'main',
               inputs: {
@@ -383,7 +383,7 @@ jobs:
                 image_tag: rollbackTag,
               },
             });
-            core.notice(`Dispatched ansible rollback on mypythonproject1-infra3 (${env}, tag=${rollbackTag})`);
+            core.notice(`Dispatched ansible rollback on python-angular-project1-infra3 (${env}, tag=${rollbackTag})`);
 
   ec2-verify-rollback-manual:
     name: "Verify EC2 Rollback [manual]"
@@ -399,7 +399,7 @@ jobs:
           github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const owner = context.repo.owner;
-            const repo = 'mypythonproject1-infra3';
+            const repo = 'python-angular-project1-infra3';
             const env = '${{ inputs.environment }}';
             const rollbackTag = '${{ inputs.rollback_tag }}';
             const envNeedle = `[${env}]`;
