@@ -10,7 +10,7 @@ import { Observable } from 'rxjs';
     providedIn: 'root'
 })
 export class ApiClient {
-    private static readonly fallbackBaseUrl = 'http://localhost:8000';
+    private static readonly fallbackBaseUrl = '';
     private baseUrl: string;
 
     constructor(private http: HttpClient) {

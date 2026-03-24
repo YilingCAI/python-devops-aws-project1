@@ -22,7 +22,8 @@ COPY src ./src
 RUN npm run build
 
 # Production stage
-FROM nginx:${NGINX_TAG}
+# Use unprivileged nginx: runs as UID 101, no chown needed, works with dropped capabilities
+FROM nginxinc/nginx-unprivileged:${NGINX_TAG}
 
 # Copy nginx config with SPA fallback (try_files → index.html)
 COPY nginx.conf /etc/nginx/conf.d/default.conf

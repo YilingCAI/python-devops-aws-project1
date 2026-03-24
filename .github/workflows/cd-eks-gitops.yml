@@ -82,7 +82,7 @@ jobs:
     uses: ./.github/workflows/_build-and-push.yml
     with:
       git-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      env-name: dev
+      env-name: ${{ inputs.environment }}
       tags: |
         type=raw,value=dev
         type=sha,prefix=dev-,format=short
@@ -110,9 +110,10 @@ jobs:
 
       - uses: ./.github/actions/deploy-env
         with:
-          gitops-env: dev
+          gitops-env: default
+          target-environment: dev
           image-tag: ${{ format('dev-{0}', needs.build-dev.outputs.sha-short) }}
-          gitops-repo: ${{ github.repository_owner }}/mypythonproject1-gitops
+          gitops-repo: ${{ github.repository_owner }}/python-angular-project1-gitops
           eks-cluster-name: mypythonproject1-dev-eks
           namespace: mypythonproject1-dev
           aws-role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
@@ -151,7 +152,7 @@ jobs:
     uses: ./.github/workflows/_build-and-push.yml
     with:
       git-ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-      env-name: staging
+      env-name: ${{ inputs.environment }}
       tags: |
         type=raw,value=staging
         type=sha,prefix=staging-,format=short
@@ -179,9 +180,10 @@ jobs:
 
       - uses: ./.github/actions/deploy-env
         with:
-          gitops-env: staging
+          gitops-env: default
+          target-environment: staging
           image-tag: ${{ format('staging-{0}', needs.build-staging.outputs.sha-short) }}
-          gitops-repo: ${{ github.repository_owner }}/mypythonproject1-gitops
+          gitops-repo: ${{ github.repository_owner }}/gitgitops
           eks-cluster-name: mypythonproject1-staging-eks
           namespace: mypythonproject1-staging
           aws-role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}
@@ -255,7 +257,7 @@ jobs:
     uses: ./.github/workflows/_build-and-push.yml
     with:
       git-ref: ${{ github.ref }}
-      env-name: prod
+      env-name: ${{ inputs.environment }}
       tags: |
         type=semver,pattern={{version}}
         type=semver,pattern={{major}}.{{minor}}
@@ -286,9 +288,10 @@ jobs:
 
       - uses: ./.github/actions/deploy-env
         with:
-          gitops-env: prod
+          gitops-env: default
+          target-environment: prod
           image-tag: ${{ github.ref_name }}
-          gitops-repo: ${{ github.repository_owner }}/mypythonproject1-gitops
+          gitops-repo: ${{ github.repository_owner }}/python-angular-project1-gitops
           eks-cluster-name: mypythonproject1-prod-eks
           namespace: mypythonproject1-production
           aws-role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}

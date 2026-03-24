@@ -26,6 +26,9 @@ inputs:
   gitops-repo:
     description: "Owner/name of the GitOps repository"
     required: true
+  target-environment:
+    description: "EKs env"
+    required: true
 
   # ── K8s / AWS ─────────────────────────────────────────────────────────────
   eks-cluster-name:
@@ -101,33 +104,9 @@ inputs:
 runs:
   using: "composite"
   steps:
-    # ── 1. Update GitOps repo ───────────────────────────────────────────────
-    - name: "Checkout GitOps repo"
-      uses: actions/checkout@v4
-      with:
-        repository: ${{ inputs.gitops-repo }}
-        token: ${{ inputs.gitops-deploy-token }}
-        path: _gitops
-
-    - name: "Patch image tag (${{ inputs.gitops-env }} → ${{ inputs.image-tag }})"
-      shell: bash
-      run: |
-        docker run --rm --user root -v "$PWD/_gitops:/gitops" mikefarah/yq:4 \
-          e '.backend.image.tag = "${{ inputs.image-tag }}" | .frontend.image.tag = "${{ inputs.image-tag }}"' \
-          -i /gitops/environments/${{ inputs.gitops-env }}/values.yaml
-
-    - name: "Commit & push GitOps change"
-      shell: bash
-      run: |
-        cd _gitops
-        git config user.name  "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add environments/${{ inputs.gitops-env }}/values.yaml
-        git diff --cached --quiet && echo "No changes to commit" && exit 0
-        git commit -m "chore(deploy): ${{ inputs.gitops-env }} image tag ${{ inputs.image-tag }} [skip ci]"
-        git push origin main
-
-    # ── 2. Authenticate with AWS ────────────────────────────────────────────
+    # ── 1. Authenticate with AWS & write K8s secret FIRST ──────────────────
+    # Must happen before the gitops commit so that pods starting in response
+    # to the ArgoCD sync always find a secret with the correct DATABASE_HOST.
     - name: "Authenticate with AWS"
       uses: ./.github/actions/aws-auth
       with:
@@ -141,7 +120,7 @@ runs:
           --name ${{ inputs.eks-cluster-name }} \
           --region ${{ inputs.aws-region }}
 
-    # ── 3. Upsert K8s DB secret ─────────────────────────────────────────────
+    # ── 2. Upsert K8s DB secret ─────────────────────────────────────────────
     - name: "Upsert DB credentials secret"
       shell: bash
       run: |
@@ -153,6 +132,34 @@ runs:
           --from-literal=username=${{ inputs.db-username }} \
           --from-literal=password=${{ inputs.db-password }} \
           --dry-run=client -o yaml | kubectl apply -f -
+
+    # ── 3. Update GitOps repo (triggers ArgoCD sync) ────────────────────────
+    # K8s secret is already correct above — pods that start from this sync
+    # will find DATABASE_HOST populated immediately.
+    - name: "Checkout GitOps repo"
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.gitops-repo }}
+        token: ${{ inputs.gitops-deploy-token }}
+        path: _gitops
+
+    - name: "Patch image tag (${{ inputs.gitops-env }} → ${{ inputs.image-tag }})"
+      shell: bash
+      run: |
+        docker run --rm --user root -v "$PWD/_gitops:/gitops" mikefarah/yq:4 \
+          e '.backend.image.tag = "${{ inputs.image-tag }}" | .frontend.image.tag = "${{ inputs.image-tag }}"' \
+          -i /gitops/environments/${{ inputs.target-environment }}/values.yaml
+
+    - name: "Commit & push GitOps change"
+      shell: bash
+      run: |
+        cd _gitops
+        git config user.name  "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add environments/${{ inputs.target-environment }}/values.yaml
+        git diff --cached --quiet && echo "No changes to commit" && exit 0
+        git commit -m "chore(deploy): ${{ inputs.gitops-env }} image tag ${{ inputs.image-tag }} [skip ci]"
+        git push origin main
 
     # ── 4. Wait for ArgoCD Healthy + Synced ────────────────────────────────
     - name: "Wait for ArgoCD sync (${{ inputs.argocd-app-name }})"

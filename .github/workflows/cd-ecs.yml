@@ -39,8 +39,18 @@ on:
         description: "Target environment"
         required: true
         type: choice
-        options: [staging, production]
+        options: [staging, prod]
         default: staging
+      operation:
+        description: "Operation to run"
+        required: true
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+      rollback_tag:
+        description: "Required when operation=rollback (for example: staging-a1b2c3d or v1.2.3)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -68,9 +78,9 @@ jobs:
     timeout-minutes: 20
     if: >
       (github.event_name == 'workflow_run'
-        && github.event.workflow_run.conclusion == 'success')
-      || (github.event_name == 'workflow_dispatch'
-        && inputs.environment == 'staging')
+        && github.event.workflow_run.conclusion == 'success') || (github.event_name == 'workflow_dispatch'
+        && inputs.environment == 'staging'
+        && inputs.operation != 'rollback')
     environment: staging
     strategy:
       matrix:
@@ -148,6 +158,92 @@ jobs:
         run: |
           echo "Waiting 10 minutes for Terraform apply to complete..."
           sleep 600
+
+  # ---------------------------------------------------------------------------
+  # 1b2. Trigger Ansible deploy on EC2 infra repo (staging)
+  # ---------------------------------------------------------------------------
+  ec2-deploy-staging:
+    name: "EC2 Deploy [staging] via Ansible"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [build-staging]
+    environment: staging
+    steps:
+      - name: Dispatch ansible-ec2-deploy to infra3 repo
+        id: dispatch_ec2_staging
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          script: |
+            const headSha = (context.payload.workflow_run && context.payload.workflow_run.head_sha) || context.sha;
+            const imageTag = `staging-${headSha.substring(0, 7)}`;
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: 'mypythonproject1-infra3',
+              workflow_id: 'ansible-ec2-deploy.yml',
+              ref: 'main',
+              inputs: {
+                environment: 'staging',
+                operation: 'deploy',
+                image_tag: imageTag,
+              },
+            });
+            console.log(`Dispatched ansible-ec2-deploy on mypythonproject1-infra3 (staging, tag=${imageTag})`);
+            core.setOutput('image_tag', imageTag);
+
+  ec2-verify-staging:
+    name: "Verify EC2 Deploy [staging]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [ec2-deploy-staging]
+    environment: staging
+    steps:
+      - name: Wait for infra3 ansible workflow result
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = 'mypythonproject1-infra3';
+            const expectedTag = `${((context.payload.workflow_run && context.payload.workflow_run.head_sha) || context.sha).substring(0, 7)}`;
+            const tagNeedle = `tag=staging-${expectedTag}`;
+            const deadline = Date.now() + 30 * 60 * 1000;
+
+            let matchedRun = null;
+            while (Date.now() < deadline) {
+              const resp = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: 'ansible-ec2-deploy.yml',
+                event: 'workflow_dispatch',
+                per_page: 20,
+              });
+
+              matchedRun = resp.data.workflow_runs.find((r) => {
+                const title = r.display_title || '';
+                return title.includes('[staging]') && title.includes(tagNeedle);
+              });
+
+              if (!matchedRun) {
+                await new Promise((resolve) => setTimeout(resolve, 15000));
+                continue;
+              }
+
+              if (matchedRun.status !== 'completed') {
+                await new Promise((resolve) => setTimeout(resolve, 15000));
+                continue;
+              }
+
+              if (matchedRun.conclusion !== 'success') {
+                core.setFailed(`infra3 ansible deploy failed: ${matchedRun.html_url}`);
+                return;
+              }
+
+              core.notice(`infra3 ansible deploy succeeded: ${matchedRun.html_url}`);
+              return;
+            }
+
+            core.setFailed('Timed out waiting for infra3 ansible staging deployment run to complete');
 
   # ---------------------------------------------------------------------------
   # 1c. ECS rolling deploy (staging)
@@ -254,8 +350,10 @@ jobs:
     name: "Build & Push [production] (${{ matrix.service }})"
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: startsWith(github.ref, 'refs/tags/v')
-    environment: production
+    if: >
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod' && inputs.operation != 'rollback')
+    environment: prod
     strategy:
       matrix:
         service: [backend, frontend]
@@ -315,7 +413,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: [build-production]
-    environment: production
+    environment: prod
     steps:
       - name: Dispatch terraform-apply to infra repo
         uses: actions/github-script@v7
@@ -341,6 +439,191 @@ jobs:
           sleep 900
 
   # ---------------------------------------------------------------------------
+  # 2c2. Trigger Ansible deploy on EC2 infra repo (production)
+  # ---------------------------------------------------------------------------
+  ec2-deploy-production:
+    name: "EC2 Deploy [production] via Ansible"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [build-production]
+    environment: prod
+    steps:
+      - name: Dispatch ansible-ec2-deploy to infra3 repo
+        id: dispatch_ec2_prod
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: 'mypythonproject1-infra3',
+              workflow_id: 'ansible-ec2-deploy.yml',
+              ref: 'main',
+              inputs: {
+                environment: 'prod',
+                operation: 'deploy',
+                image_tag: tag,
+                production_confirmation: 'APPROVE_PROD_DEPLOY',
+              },
+            });
+            console.log(`Dispatched ansible-ec2-deploy on mypythonproject1-infra3 (prod, tag=${tag})`);
+            core.setOutput('image_tag', tag);
+
+  ec2-verify-production:
+    name: "Verify EC2 Deploy [production]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [ec2-deploy-production]
+    environment: prod
+    steps:
+      - name: Wait for infra3 ansible workflow result
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = 'mypythonproject1-infra3';
+            const tag = context.ref.replace('refs/tags/', '');
+            const tagNeedle = `tag=${tag}`;
+            const deadline = Date.now() + 45 * 60 * 1000;
+
+            let matchedRun = null;
+            while (Date.now() < deadline) {
+              const resp = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: 'ansible-ec2-deploy.yml',
+                event: 'workflow_dispatch',
+                per_page: 20,
+              });
+
+              matchedRun = resp.data.workflow_runs.find((r) => {
+                const title = r.display_title || '';
+                return title.includes('[prod]') && title.includes(tagNeedle);
+              });
+
+              if (!matchedRun) {
+                await new Promise((resolve) => setTimeout(resolve, 20000));
+                continue;
+              }
+
+              if (matchedRun.status !== 'completed') {
+                await new Promise((resolve) => setTimeout(resolve, 20000));
+                continue;
+              }
+
+              if (matchedRun.conclusion !== 'success') {
+                core.setFailed(`infra3 ansible deploy failed: ${matchedRun.html_url}`);
+                return;
+              }
+
+              core.notice(`infra3 ansible deploy succeeded: ${matchedRun.html_url}`);
+              return;
+            }
+
+            core.setFailed('Timed out waiting for infra3 ansible production deployment run to complete');
+
+  # ---------------------------------------------------------------------------
+  # 3. Manual rollback on EC2 infra repo via Ansible
+  # ---------------------------------------------------------------------------
+  ec2-rollback-manual:
+    name: "EC2 Rollback [manual] via Ansible"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'rollback'
+    environment: ${{ inputs.environment }}
+    outputs:
+      rollback_tag: ${{ steps.dispatch_rollback.outputs.rollback_tag }}
+    steps:
+      - name: Validate rollback tag input
+        shell: bash
+        run: |
+          if [ -z "${{ inputs.rollback_tag }}" ]; then
+            echo "::error::rollback_tag is required when operation=rollback"
+            exit 1
+          fi
+
+      - name: Dispatch ansible rollback to infra3 repo
+        id: dispatch_rollback
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          script: |
+            const env = '${{ inputs.environment }}';
+            const rollbackTag = '${{ inputs.rollback_tag }}';
+            const isProd = env === 'prod';
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: 'mypythonproject1-infra3',
+              workflow_id: 'ansible-ec2-deploy.yml',
+              ref: 'main',
+              inputs: {
+                environment: env,
+                operation: 'rollback',
+                image_tag: rollbackTag,
+                production_confirmation: isProd ? 'APPROVE_PROD_DEPLOY' : '',
+              },
+            });
+            console.log(`Dispatched ansible rollback on mypythonproject1-infra3 (${env}, tag=${rollbackTag})`);
+            core.setOutput('rollback_tag', rollbackTag);
+
+  ec2-verify-rollback-manual:
+    name: "Verify EC2 Rollback [manual]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'rollback'
+    needs: [ec2-rollback-manual]
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Wait for infra3 ansible rollback result
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = 'mypythonproject1-infra3';
+            const env = '${{ inputs.environment }}';
+            const rollbackTag = '${{ inputs.rollback_tag }}';
+            const envNeedle = `[${env}]`;
+            const opNeedle = 'rollback';
+            const tagNeedle = `tag=${rollbackTag}`;
+            const timeoutMs = env === 'prod' ? 45 * 60 * 1000 : 30 * 60 * 1000;
+            const pollMs = 20000;
+            const deadline = Date.now() + timeoutMs;
+
+            let matchedRun = null;
+            while (Date.now() < deadline) {
+              const resp = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: 'ansible-ec2-deploy.yml',
+                event: 'workflow_dispatch',
+                per_page: 20,
+              });
+
+              matchedRun = resp.data.workflow_runs.find((r) => {
+                const title = (r.display_title || '').toLowerCase();
+                return title.includes(envNeedle.toLowerCase()) && title.includes(opNeedle) && title.includes(tagNeedle.toLowerCase());
+              });
+
+              if (!matchedRun || matchedRun.status !== 'completed') {
+                await new Promise((resolve) => setTimeout(resolve, pollMs));
+                continue;
+              }
+
+              if (matchedRun.conclusion !== 'success') {
+                core.setFailed(`infra3 ansible rollback failed: ${matchedRun.html_url}`);
+                return;
+              }
+
+              core.notice(`infra3 ansible rollback succeeded: ${matchedRun.html_url}`);
+              return;
+            }
+
+            core.setFailed('Timed out waiting for infra3 ansible rollback run to complete');
+
+  # ---------------------------------------------------------------------------
   # 2d. ECS rolling deploy (production)
   # ---------------------------------------------------------------------------
   deploy-production:
@@ -348,7 +631,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [infra-production]
-    environment: production
+    environment: prod
     strategy:
       matrix:
         service: [backend, frontend]

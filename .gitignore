@@ -184,3 +184,6 @@ poetry.lock.local
 package-lock.json.local
 
 mypythonproject1.code-workspace
+
+.gitlab-ci.yml
+.gitlab/*
