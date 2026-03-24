@@ -83,7 +83,7 @@ jobs:
       - name: Dispatch ansible-ec2-deploy to infra3 repo
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const env = '${{ inputs.environment }}';
             const imageTag = `${env}-${context.sha.substring(0, 7)}`;
@@ -111,7 +111,7 @@ jobs:
       - name: Wait for infra3 ansible workflow result
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const owner = context.repo.owner;
             const repo = 'mypythonproject1-infra3';
@@ -183,7 +183,7 @@ jobs:
       - name: Dispatch ansible-ec2-deploy to infra3 repo
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const headSha = context.payload.workflow_run.head_sha;
             const imageTag = `staging-${headSha.substring(0, 7)}`;
@@ -211,7 +211,7 @@ jobs:
       - name: Wait for infra3 ansible workflow result
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const owner = context.repo.owner;
             const repo = 'mypythonproject1-infra3';
@@ -284,7 +284,7 @@ jobs:
       - name: Dispatch ansible-ec2-deploy to infra3 repo
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const tag = context.ref.replace('refs/tags/', '');
             await github.rest.actions.createWorkflowDispatch({
@@ -312,7 +312,7 @@ jobs:
       - name: Wait for infra3 ansible workflow result
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const owner = context.repo.owner;
             const repo = 'mypythonproject1-infra3';
@@ -368,7 +368,7 @@ jobs:
       - name: Dispatch ansible rollback to infra3 repo
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const env = '${{ inputs.environment }}';
             const rollbackTag = '${{ inputs.rollback_tag }}';
@@ -396,7 +396,7 @@ jobs:
       - name: Wait for infra3 ansible rollback result
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             const owner = context.repo.owner;
             const repo = 'mypythonproject1-infra3';

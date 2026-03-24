@@ -74,7 +74,7 @@ jobs:
       - name: Dispatch terraform apply to infra repo
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
@@ -182,7 +182,7 @@ jobs:
       - name: Dispatch terraform apply to infra repo
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
@@ -323,7 +323,7 @@ jobs:
       - name: Dispatch terraform apply to infra repo
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.INFRA_DEPLOY_TOKEN }}
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
           script: |
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
