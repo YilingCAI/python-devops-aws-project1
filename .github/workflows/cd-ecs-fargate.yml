@@ -1,0 +1,396 @@
+###############################################################################
+# CD — ECS / Fargate Deployment
+###############################################################################
+#
+# Repository separation:
+#   mypythonproject1         <- app code + release orchestration
+#   mypythonproject1-infra   <- Terraform for ECS/Fargate infrastructure
+#
+# Unified workflow:
+#   - Manual (workflow_dispatch): dev/staging deploy
+#   - Automatic staging: CI success on develop
+#   - Automatic release tag creation: CI success on main
+#   - Automatic production: tag push v*
+###############################################################################
+name: "CD — ECS/Fargate"
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [develop, main]
+    types: [completed]
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options: [dev, staging]
+        default: staging
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    ${{ startsWith(github.ref, 'refs/tags/v') && 'cd-ecs-production'
+     || github.event_name == 'workflow_run' && format('cd-ecs-auto-{0}', github.event.workflow_run.head_branch)
+     || format('cd-ecs-manual-{0}', inputs.environment) }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  manual-build:
+    name: "Build & Push [manual:${{ inputs.environment }}]"
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_build-and-push.yml
+    with:
+      git-ref: ${{ github.sha }}
+      env-name: ${{ inputs.environment }}
+      github-environment: ${{ inputs.environment }}
+      tags: |
+        type=raw,value=${{ inputs.environment }}
+        type=sha,prefix=${{ inputs.environment }}-,format=short
+      build-args: |
+        BUILD_ENV=${{ inputs.environment }}
+        GIT_SHA=${{ github.sha }}
+      scan-severity: CRITICAL,HIGH
+      scan-exit-code: "0"
+    secrets: inherit
+
+  manual-infra:
+    name: "Infra Apply [manual:${{ inputs.environment }}]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [manual-build]
+    if: needs.manual-build.result == 'success'
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Dispatch terraform apply to infra repo
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: 'mypythonproject1-infra',
+              workflow_id: 'terraform-plan-apply.yml',
+              ref: 'main',
+              inputs: {
+                environment: '${{ inputs.environment }}',
+                action: 'apply',
+              },
+            });
+            console.log('Dispatched terraform-plan-apply on mypythonproject1-infra (${{ inputs.environment }})');
+
+      - name: Wait for infra apply
+        run: |
+          echo "Waiting 10 minutes for Terraform apply to complete..."
+          sleep 600
+
+  manual-deploy:
+    name: "ECS Deploy [manual:${{ inputs.environment }}] (${{ matrix.service }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [manual-infra]
+    if: needs.manual-infra.result == 'success'
+    environment: ${{ inputs.environment }}
+    strategy:
+      matrix:
+        service: [backend, frontend]
+      fail-fast: false
+    permissions:
+      id-token: write
+    steps:
+      - name: Authenticate with AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Force new ECS deployment
+        run: |
+          ENV="${{ inputs.environment }}"
+          CLUSTER="mypythonproject1-${ENV}-cluster"
+          SERVICE="mypythonproject1-${ENV}-${{ matrix.service }}-service"
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --force-new-deployment \
+            --region "${{ secrets.AWS_REGION }}"
+
+      - name: Wait for service stability
+        timeout-minutes: 15
+        run: |
+          ENV="${{ inputs.environment }}"
+          CLUSTER="mypythonproject1-${ENV}-cluster"
+          SERVICE="mypythonproject1-${ENV}-${{ matrix.service }}-service"
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --region "${{ secrets.AWS_REGION }}"
+
+  manual-smoke-test:
+    name: "Smoke Test [manual:${{ inputs.environment }}]"
+    needs: [manual-deploy]
+    if: needs.manual-deploy.result == 'success'
+    uses: ./.github/workflows/_smoke-test.yml
+    with:
+      environment: ${{ inputs.environment }}
+      app-url: ${{ vars.APP_URL }}
+      warmup-seconds: 15
+      deploy-sha: ${{ github.sha }}
+    secrets: inherit
+
+  auto-build-staging:
+    name: "Auto Build & Push [staging]"
+    if: >
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_branch == 'develop'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_build-and-push.yml
+    with:
+      git-ref: ${{ github.event.workflow_run.head_sha }}
+      env-name: staging
+      github-environment: staging
+      tags: |
+        type=raw,value=staging
+        type=sha,prefix=staging-,format=short
+      build-args: |
+        BUILD_ENV=staging
+        GIT_SHA=${{ github.event.workflow_run.head_sha }}
+      scan-severity: CRITICAL,HIGH
+      scan-exit-code: "0"
+    secrets: inherit
+
+  auto-infra-staging:
+    name: "Auto Infra Apply [staging]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [auto-build-staging]
+    if: needs.auto-build-staging.result == 'success'
+    environment: staging
+    steps:
+      - name: Dispatch terraform apply to infra repo
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: 'mypythonproject1-infra',
+              workflow_id: 'terraform-plan-apply.yml',
+              ref: 'main',
+              inputs: {
+                environment: 'staging',
+                action: 'apply',
+              },
+            });
+            console.log('Dispatched terraform-plan-apply on mypythonproject1-infra (staging)');
+
+      - name: Wait for infra apply
+        run: |
+          echo "Waiting 10 minutes for Terraform apply to complete..."
+          sleep 600
+
+  auto-deploy-staging:
+    name: "Auto ECS Deploy [staging] (${{ matrix.service }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [auto-infra-staging]
+    if: needs.auto-infra-staging.result == 'success'
+    environment: staging
+    strategy:
+      matrix:
+        service: [backend, frontend]
+      fail-fast: false
+    permissions:
+      id-token: write
+    steps:
+      - name: Authenticate with AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Force new ECS deployment
+        run: |
+          CLUSTER="mypythonproject1-staging-cluster"
+          SERVICE="mypythonproject1-staging-${{ matrix.service }}-service"
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --force-new-deployment \
+            --region "${{ secrets.AWS_REGION }}"
+
+      - name: Wait for service stability
+        timeout-minutes: 15
+        run: |
+          CLUSTER="mypythonproject1-staging-cluster"
+          SERVICE="mypythonproject1-staging-${{ matrix.service }}-service"
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --region "${{ secrets.AWS_REGION }}"
+
+  auto-smoke-test-staging:
+    name: "Auto Smoke Test [staging]"
+    needs: [auto-deploy-staging]
+    if: needs.auto-deploy-staging.result == 'success'
+    uses: ./.github/workflows/_smoke-test.yml
+    with:
+      environment: staging
+      app-url: ${{ vars.APP_URL }}
+      warmup-seconds: 15
+      deploy-sha: ${{ github.event.workflow_run.head_sha }}
+    secrets: inherit
+
+  auto-autoversion:
+    name: "Auto Semantic Release"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >
+      github.event_name == 'workflow_run'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_branch == 'main'
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: .github/package-lock.json
+
+      - name: Install semantic-release
+        working-directory: .github
+        run: npm ci --ignore-scripts
+
+      - name: Run semantic-release
+        working-directory: .github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
+
+  auto-build-production:
+    name: "Auto Build & Push [production]"
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/_build-and-push.yml
+    with:
+      git-ref: ${{ github.ref }}
+      env-name: production
+      github-environment: prod
+      tags: |
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+        type=raw,value=latest
+        type=sha,prefix=,format=short
+      build-args: |
+        BUILD_ENV=production
+        GIT_SHA=${{ github.sha }}
+        VERSION=${{ github.ref_name }}
+      scan-severity: CRITICAL
+      scan-exit-code: "1"
+    secrets: inherit
+
+  auto-infra-production:
+    name: "Auto Infra Apply [production]"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [auto-build-production]
+    if: needs.auto-build-production.result == 'success'
+    environment: prod
+    steps:
+      - name: Dispatch terraform apply to infra repo
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITOPS_DEPLOY_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: 'mypythonproject1-infra',
+              workflow_id: 'terraform-plan-apply.yml',
+              ref: 'main',
+              inputs: {
+                environment: 'prod',
+                action: 'apply',
+              },
+            });
+            console.log('Dispatched terraform-plan-apply on mypythonproject1-infra (prod)');
+
+      - name: Wait for infra apply
+        run: |
+          echo "Waiting 15 minutes for Terraform apply to complete..."
+          sleep 900
+
+  auto-deploy-production:
+    name: "Auto ECS Deploy [production] (${{ matrix.service }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [auto-infra-production]
+    if: needs.auto-infra-production.result == 'success'
+    environment: prod
+    strategy:
+      matrix:
+        service: [backend, frontend]
+      fail-fast: false
+    permissions:
+      id-token: write
+    steps:
+      - name: Authenticate with AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Force new ECS deployment
+        run: |
+          CLUSTER="mypythonproject1-production-cluster"
+          SERVICE="mypythonproject1-production-${{ matrix.service }}-service"
+          aws ecs update-service \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --force-new-deployment \
+            --region "${{ secrets.AWS_REGION }}"
+
+      - name: Wait for service stability
+        timeout-minutes: 15
+        run: |
+          CLUSTER="mypythonproject1-production-cluster"
+          SERVICE="mypythonproject1-production-${{ matrix.service }}-service"
+          aws ecs wait services-stable \
+            --cluster "$CLUSTER" \
+            --services "$SERVICE" \
+            --region "${{ secrets.AWS_REGION }}"
+
+  auto-smoke-test-production:
+    name: "Auto Smoke Test [production]"
+    needs: [auto-deploy-production]
+    if: needs.auto-deploy-production.result == 'success'
+    uses: ./.github/workflows/_smoke-test.yml
+    with:
+      environment: production
+      app-url: ${{ vars.APP_URL }}
+      warmup-seconds: 20
+      deploy-version: ${{ github.ref_name }}
+      deploy-sha: ${{ github.sha }}
+    secrets: inherit

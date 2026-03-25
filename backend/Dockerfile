@@ -23,8 +23,8 @@ FROM python:${PYTHON_VERSION}-slim
 
 WORKDIR /app
 
-# Create non-root user for security
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Create non-root user for security (UID/GID 1000 to match K8s securityContext)
+RUN groupadd -g 1000 appuser && useradd -u 1000 -g appuser -m appuser
 
 # Install runtime dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \

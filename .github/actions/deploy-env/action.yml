@@ -1,0 +1,222 @@
+###############################################################################
+# composite action: deploy-env
+#
+# Runs the four post-build deployment steps for a single environment:
+#   1. Update image tag in the GitOps repo
+#   2. Upsert Kubernetes DB credentials secret
+#   3. Wait for ArgoCD to reach Healthy + Synced
+#   4. Smoke-test the live URL
+#
+# Callers: cd-eks-gitops.yml (dev / staging / production deploy jobs)
+#
+# Note: composite actions cannot consume `secrets` context directly.
+#       All sensitive values must be passed as inputs by the caller.
+###############################################################################
+name: "Deploy Environment"
+description: "Update GitOps repo, sync K8s secrets, wait for ArgoCD, smoke test"
+
+inputs:
+  # ── Identity ─────────────────────────────────────────────────────────────
+  gitops-env:
+    description: "Environment folder in the gitops repo (dev / staging / production)"
+    required: true
+  image-tag:
+    description: "Docker image tag to deploy"
+    required: true
+  gitops-repo:
+    description: "Owner/name of the GitOps repository"
+    required: true
+  target-environment:
+    description: "EKs env"
+    required: true
+
+  # ── K8s / AWS ─────────────────────────────────────────────────────────────
+  eks-cluster-name:
+    description: "EKS cluster name"
+    required: true
+  namespace:
+    description: "Kubernetes namespace that holds the DB secret"
+    required: true
+  aws-role-arn:
+    description: "IAM role ARN to assume (OIDC)"
+    required: true
+  aws-region:
+    description: "AWS region"
+    required: true
+
+  # ── Secrets passed as inputs ──────────────────────────────────────────────
+  gitops-deploy-token:
+    description: "PAT with contents:write on the GitOps repo"
+    required: true
+  db-host:
+    description: "RDS hostname"
+    required: true
+  db-port:
+    description: "RDS port"
+    required: true
+  db-name:
+    description: "Database name"
+    required: true
+  db-username:
+    description: "Database user"
+    required: true
+  db-password:
+    description: "Database password"
+    required: true
+  argocd-server:
+    description: "ArgoCD server hostname (no scheme)"
+    required: true
+  argocd-token:
+    description: "ArgoCD API token"
+    required: true
+
+  # ── ArgoCD poll settings ──────────────────────────────────────────────────
+  argocd-app-name:
+    description: "ArgoCD Application name to poll"
+    required: true
+  argocd-max-retries:
+    description: "Maximum polling attempts (each waits 30 s)"
+    required: false
+    default: "30"
+
+  # ── Smoke test ────────────────────────────────────────────────────────────
+  smoke-test-enabled:
+    description: "Set to 'true' to run the smoke test step"
+    required: false
+    default: "false"
+  app-url:
+    description: "Base URL for the smoke-test health check"
+    required: false
+    default: ""
+  warmup-seconds:
+    description: "Seconds to wait before hitting the health endpoint"
+    required: false
+    default: "15"
+  deploy-sha:
+    description: "Commit SHA that was deployed (for summary)"
+    required: false
+    default: ""
+  deploy-version:
+    description: "Semver tag that was deployed (for summary)"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    # ── 1. Authenticate with AWS & write K8s secret FIRST ──────────────────
+    # Must happen before the gitops commit so that pods starting in response
+    # to the ArgoCD sync always find a secret with the correct DATABASE_HOST.
+    - name: "Authenticate with AWS"
+      uses: ./.github/actions/aws-auth
+      with:
+        role-arn: ${{ inputs.aws-role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: "Update kubeconfig"
+      shell: bash
+      run: |
+        aws eks update-kubeconfig \
+          --name ${{ inputs.eks-cluster-name }} \
+          --region ${{ inputs.aws-region }}
+
+    # ── 2. Upsert K8s DB secret ─────────────────────────────────────────────
+    - name: "Upsert DB credentials secret"
+      shell: bash
+      run: |
+        kubectl create secret generic mypythonproject1-db-secret \
+          --namespace ${{ inputs.namespace }} \
+          --from-literal=host=${{ inputs.db-host }} \
+          --from-literal=port=${{ inputs.db-port }} \
+          --from-literal=dbname=${{ inputs.db-name }} \
+          --from-literal=username=${{ inputs.db-username }} \
+          --from-literal=password=${{ inputs.db-password }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+
+    # ── 3. Update GitOps repo (triggers ArgoCD sync) ────────────────────────
+    # K8s secret is already correct above — pods that start from this sync
+    # will find DATABASE_HOST populated immediately.
+    - name: "Checkout GitOps repo"
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.gitops-repo }}
+        token: ${{ inputs.gitops-deploy-token }}
+        path: _gitops
+
+    - name: "Patch image tag (${{ inputs.gitops-env }} → ${{ inputs.image-tag }})"
+      shell: bash
+      run: |
+        docker run --rm --user root -v "$PWD/_gitops:/gitops" mikefarah/yq:4 \
+          e '.backend.image.tag = "${{ inputs.image-tag }}" | .frontend.image.tag = "${{ inputs.image-tag }}"' \
+          -i /gitops/environments/${{ inputs.target-environment }}/values.yaml
+
+    - name: "Commit & push GitOps change"
+      shell: bash
+      run: |
+        cd _gitops
+        git config user.name  "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add environments/${{ inputs.target-environment }}/values.yaml
+        git diff --cached --quiet && echo "No changes to commit" && exit 0
+        git commit -m "chore(deploy): ${{ inputs.gitops-env }} image tag ${{ inputs.image-tag }} [skip ci]"
+        git push origin main
+
+    # ── 4. Wait for ArgoCD Healthy + Synced ────────────────────────────────
+    - name: "Wait for ArgoCD sync (${{ inputs.argocd-app-name }})"
+      shell: bash
+      env:
+        ARGOCD_SERVER: ${{ inputs.argocd-server }}
+        ARGOCD_TOKEN: ${{ inputs.argocd-token }}
+      run: |
+        APP="${{ inputs.argocd-app-name }}"
+        MAX=${{ inputs.argocd-max-retries }}
+        SLEEP=30
+
+        for i in $(seq 1 "$MAX"); do
+          RESP=$(curl -sf \
+            -H "Authorization: Bearer $ARGOCD_TOKEN" \
+            "http://${ARGOCD_SERVER}/api/v1/applications/${APP}" || true)
+
+          HEALTH=$(echo "$RESP" | jq -r '.status.health.status // "Unknown"')
+          SYNC=$(echo   "$RESP" | jq -r '.status.sync.status   // "Unknown"')
+          echo "[$i/$MAX] health=$HEALTH  sync=$SYNC"
+
+          if [[ "$HEALTH" == "Healthy" && "$SYNC" == "Synced" ]]; then
+            echo "✅ ArgoCD: $APP is Healthy and Synced"
+            exit 0
+          fi
+
+          if [[ "$HEALTH" == "Degraded" ]]; then
+            echo "❌ ArgoCD: $APP health is Degraded — failing fast"
+            exit 1
+          fi
+
+          sleep "$SLEEP"
+        done
+
+        echo "❌ Timed out waiting for $APP to become Healthy+Synced"
+        exit 1
+
+    # ── 5. Smoke test (optional) ────────────────────────────────────────────
+    - name: "Health check"
+      if: inputs.smoke-test-enabled == 'true'
+      shell: bash
+      env:
+        APP_URL: ${{ inputs.app-url }}
+        WARMUP_SECS: ${{ inputs.warmup-seconds }}
+      run: bash .github/scripts/smoke-test.sh
+
+    - name: "Write deployment summary"
+      if: inputs.smoke-test-enabled == 'true'
+      shell: bash
+      run: |
+        {
+          echo "## ${{ inputs.gitops-env }} Deployment"
+          echo "| Field   | Value |"
+          echo "|---------|-------|"
+          echo "| Env     | \`${{ inputs.gitops-env }}\` |"
+          VERSION="${{ inputs.deploy-version }}"
+          SHA="${{ inputs.deploy-sha }}"
+          echo "| Version | \`${VERSION:-N/A}\` |"
+          echo "| Commit  | \`${SHA:-$GITHUB_SHA}\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
