@@ -187,3 +187,5 @@ mypythonproject1.code-workspace
 
 .gitlab-ci.yml
 .gitlab/*
+
+terraform_bootstrap/.aws.local.env
