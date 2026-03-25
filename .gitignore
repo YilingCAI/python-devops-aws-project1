@@ -187,3 +187,8 @@ mypythonproject1.code-workspace
 
 .gitlab-ci.yml
 .gitlab/*
+
+# Local AWS credential files (must never be committed)
+.aws.local.env
+**/.aws.local.env
+terraform_bootstrap/.aws.local.env
