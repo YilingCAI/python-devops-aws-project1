@@ -183,7 +183,7 @@ jobs:
           gitops-env: default
           target-environment: staging
           image-tag: ${{ format('staging-{0}', needs.build-staging.outputs.sha-short) }}
-          gitops-repo: ${{ github.repository_owner }}/gitgitops
+          gitops-repo: ${{ github.repository_owner }}/python-angular-project1-gitops
           eks-cluster-name: mypythonproject1-staging-eks
           namespace: mypythonproject1-staging
           aws-role-arn: ${{ secrets.AWS_ROLE_TO_ASSUME }}

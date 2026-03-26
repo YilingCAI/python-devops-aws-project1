@@ -16,8 +16,13 @@ locals {
 
   infra_actions = [
     "ecs:*",
+    "eks:*",
     "ec2:*",
+    "autoscaling:*",
     "elasticloadbalancing:*",
+    "acm:*",
+    "route53:*",
+    "wafv2:*",
     "logs:*",
     "cloudwatch:*",
     "secretsmanager:*",
@@ -196,6 +201,7 @@ data "aws_iam_policy_document" "github_actions_permissions" {
     sid    = "PassRole"
     effect = "Allow"
     actions = [
+      "iam:*",
       "iam:PassRole",
       "iam:GetRole",
       "iam:CreateServiceLinkedRole",

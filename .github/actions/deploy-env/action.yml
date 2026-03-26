@@ -123,14 +123,26 @@ runs:
     # ── 2. Upsert K8s DB secret ─────────────────────────────────────────────
     - name: "Upsert DB credentials secret"
       shell: bash
+      env:
+        DB_HOST: ${{ inputs.db-host }}
+        DB_PORT: ${{ inputs.db-port }}
+        DB_NAME: ${{ inputs.db-name }}
+        DB_USERNAME: ${{ inputs.db-username }}
+        DB_PASSWORD: ${{ inputs.db-password }}
       run: |
+        : "${DB_HOST:?db-host input is required}"
+        : "${DB_PORT:?db-port input is required}"
+        : "${DB_NAME:?db-name input is required}"
+        : "${DB_USERNAME:?db-username input is required}"
+        : "${DB_PASSWORD:?db-password input is required}"
+
         kubectl create secret generic mypythonproject1-db-secret \
           --namespace ${{ inputs.namespace }} \
-          --from-literal=host=${{ inputs.db-host }} \
-          --from-literal=port=${{ inputs.db-port }} \
-          --from-literal=dbname=${{ inputs.db-name }} \
-          --from-literal=username=${{ inputs.db-username }} \
-          --from-literal=password=${{ inputs.db-password }} \
+          "--from-literal=host=${DB_HOST}" \
+          "--from-literal=port=${DB_PORT}" \
+          "--from-literal=dbname=${DB_NAME}" \
+          "--from-literal=username=${DB_USERNAME}" \
+          "--from-literal=password=${DB_PASSWORD}" \
           --dry-run=client -o yaml | kubectl apply -f -
 
     # ── 3. Update GitOps repo (triggers ArgoCD sync) ────────────────────────
